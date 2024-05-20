@@ -14,38 +14,58 @@
 #include <iostream>
 #include <vector>
 #include <unordered_set>
+#include <stdio.h>
 
 using namespace std;
 
 //定义摩尔斯密码的二叉树结点
 struct TreeNode{
     char val;
-    TreeNode* left;
-    TreeNode* right;
-    TreeNode(char c):val(c),left(nullptr),right(nullptr){}
+    bool word_end;
+    bool root;//根节点
+    TreeNode* dot;
+    TreeNode* connect;
+    TreeNode(char c):val(c),dot(nullptr),connect(nullptr){}
 };
 
 //构建摩尔斯密码的二叉树
 TreeNode* buildMorseTree(vector<string>& morseCodes){
     TreeNode* root = new TreeNode('*');//根节点
 
-    for(const string& code:morseCodes){
-        TreeNode* node = root;
-        for(char c:code){
-            if(c == '.'){
-                if(!node->left){
-                    node->left = new TreeNode('*');
+    for(const string& code : morseCodes){
+        TreeNode* current = root;
+        for(size_t i = 0; i < code.size(); i++){
+            printf("当前处理的是code: %s, 它的长度是 %lu\n", code.c_str(), code.size());
+            if(code[i] == '.'){
+                printf("  当前处理的是dot\n");
+                if(!current->dot){
+                    current->dot = new TreeNode('.');
+                    printf("    开辟一个新dot\n");
                 }
-                node = node->left;
-
-            }else if(c == '-'){
-                if(!node->right){
-                    node->right = new TreeNode('*');
+                current = current->dot;
+                printf("  当前节点指向dot\n");
+                if(i == code.size()-1){
+                    printf("    morse标码结束，在当前节点加上结束标志\n");
+                    current->word_end = true;
                 }
-                node = node->right;
-
+            }else if(code[i] == '-'){
+                printf("  当前处理的是 - \n");
+                if(!current->connect){
+                    current->connect = new TreeNode('-');
+                    printf("    开辟一个新 - \n");
+                }
+                current = current->connect;
+                printf("  当前节点指向 - \n");
+                if(i == code.size()-1){
+                    printf("    morse标码结束，在当前节点加上结束标志\n");
+                    current->word_end = true;
+                }
+            }else{
+                printf("  当前输入%c，不合法\n", code[i]);
             }
+            printf("\n\n");    
         }
+        printf("----------------------------------------------------\n");
     }
     return root;
 }
@@ -58,22 +78,28 @@ int quantity(vector<string>& words){
     TreeNode* root = buildMorseTree(morseCodes);
 
     for(string& word:words){
+        printf("当前word是 %s\n", word.c_str());
         string translation;
         for(char c:word){
+            printf("  当前word中的字符为 %c\n", c);
             string path;
-            TreeNode* node=root;
-            while(c != node->val){
-                if(node->left && node->left->val == c){
+            TreeNode* current = root;
+            while (current != nullptr && c != current->val) {
+            printf("当前字符c与当前节点值不匹配,继续循环\n");
+                if (current->dot && current->dot->val == c) {
+                    printf("有左节点\n");
                     path += '.';
-                    node = node->left;//移动到左节点
-                }else if(node->right && node->right->val == c){
+                    current = current->dot; // 移动到左节点
+                } else if (current->connect && current->connect->val == c) {
+                    printf("有右节点\n");
                     path += '-';
-                    node = node->right;//移动到右节点
-                }else{
-                    //处理当前字符无法匹配当前节点的情况（既不是 左节点 又不是 右节点）
+                    current = current->connect; // 移动到右节点
+                } else {
+                    printf("跳出当前循环\n");
                     break;
                 }
             }
+            printf("\n\n");
             translation += path;
         }
         translations.insert(translation);
