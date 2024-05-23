@@ -39,12 +39,14 @@ myStack.empty(); // 返回 False
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 // 定义栈结构
 struct MyStack {
-    int *array; // 用于存储栈的元素
+    int *stack_; // 用于存储栈的元素
     int top_element; // 记录栈顶元素的索引
     int capacity; // 栈的容量
+    bool empty; // 记录栈是否为空
 };
 
 // 初始化栈
@@ -52,48 +54,54 @@ struct MyStack* createStack(int capacity) {
     struct MyStack* stack = (struct MyStack*)malloc(sizeof(struct MyStack));
     stack->capacity = capacity;
     stack->top_element = -1;
-    stack->array = (int*)malloc(stack->capacity * sizeof(int));
+    stack->stack_ = (int*)malloc(stack->capacity * sizeof(int));
+    stack->empty = true; // 初始时栈为空
     return stack;
 }
 
 // 判断栈是否已满
-int isFull(struct MyStack* stack) {
+int full(struct MyStack* stack) {
     return stack->top_element == stack->capacity - 1;
-}
-
-// 判断栈是否为空
-int isEmpty(struct MyStack* stack) {
-    return stack->top_element == -1;
 }
 
 // 将元素压入栈顶
 void push(struct MyStack* stack, int item) {
-    if (isFull(stack)) {
+    if (full(stack)) {
         printf("Stack is full, cannot push element %d\n", item);
         return;
     }
-    stack->array[++stack->top_element] = item;
+    stack->stack_[++stack->top_element] = item;
+    stack->empty = false; // 栈中有元素
     printf("Pushing element %d onto the stack.\n", item);
 }
 
 // 删除并返回栈顶元素
 int pop(struct MyStack* stack) {
-    if (isEmpty(stack)) {
+    if (stack->empty) {
         printf("Stack is empty, cannot pop.\n");
         return -1;
     }
-    int popped_element = stack->array[stack->top_element--];
+    int popped_element = stack->stack_[stack->top_element--];
+    if (stack->top_element == -1) {
+        stack->empty = true; // 栈变为空
+    }
     printf("Popping element %d from the stack.\n", popped_element);
     return popped_element;
 }
 
 // 返回栈顶元素
 int top(struct MyStack* stack) {
-    if (isEmpty(stack)) {
+    if (stack->empty) {
         printf("Stack is empty, no top element.\n");
         return -1;
     }
-    return stack->array[stack->top_element];
+    return stack->stack_[stack->top_element];
+}
+
+// 释放栈的内存
+void freeStack(struct MyStack* stack) {
+    free(stack->stack_);
+    free(stack);
 }
 
 // 主函数
@@ -103,7 +111,10 @@ int main() {
     push(myStack, 2);
     printf("Top element: %d\n", top(myStack)); // 返回 2
     printf("Popped element: %d\n", pop(myStack)); // 返回 2
-    printf("Is the stack empty? %s\n", isEmpty(myStack) ? "true" : "false"); // 返回 False
+    printf("Is the stack empty? %s\n", myStack->empty ? "true" : "false"); // 返回 false
+    
+    // 释放栈的内存
+    freeStack(myStack);
     
     return 0;
 }
