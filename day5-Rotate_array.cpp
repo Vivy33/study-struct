@@ -34,27 +34,27 @@
 void rotate(const int* nums, int numsSize, int k) {
     k = k % numsSize;//保证k不超过数组长度
     int* rotated = (int*)malloc(numsSize* sizeof(int));
-    if (rotated == NULL) {
-        return;//处理内存分配失败
-    }
+        if (rotated == NULL) {
+            return;//处理内存分配失败
+        }
 
 //将数组进行 右轮转存 并存储在 临时数组 中
         for (int i = 0; i < numsSize; ++i) {
-        rotated[(i + k) % numsSize] = nums[i];
-        printf("rotated[%d] = nums[%d] -> rotated[%d] = %d\n", (i + k) % numsSize, i, (i + k) % numsSize, nums[i]);
+            rotated[(i + k) % numsSize] = nums[i];
+            printf("rotated[%d] = nums[%d] -> rotated[%d] = %d\n", (i + k) % numsSize, i, (i + k) % numsSize, nums[i]);
         }
 
         printf("\n");
 
 //将 临时数组 中的结果复制回 原数组
         for (int i = 0; i < numsSize; ++i) {
-        printf("nums[%d] = rotated[%d] -> nums[%d] = %d\n", i, i, i, rotated[i]);
-        ((int*)nums)[i] = rotated[i];//const修饰过的指针需要通过 类型转换 解除常量性
+            printf("nums[%d] = rotated[%d] -> nums[%d] = %d\n", i, i, i, rotated[i]);
+            ((int*)nums)[i] = rotated[i];//const修饰过的指针需要通过 类型转换 解除常量性
         }
 
-    printf("\n");
-    free(rotated);
-}
+        printf("\n");
+        free(rotated);
+    }
 
 int main() {
     int nums[] = {1, 2, 3, 4, 5, 6, 7};
@@ -67,6 +67,3 @@ int main() {
     printf("\n");
     return 0;
 }
-
-//方法二：
-
