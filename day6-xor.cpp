@@ -30,6 +30,8 @@
 
 #include <stdio.h>
 
+#define Len(a) (sizeof(a) / sizeof(a[0]))
+
 int singleNumber(const int* nums, const int numsSize) {
     int result = 0;
     for (int i = 0; i < numsSize; i++) {
@@ -39,19 +41,19 @@ int singleNumber(const int* nums, const int numsSize) {
     return result;
 }
 
+void printResult(const int* nums, const int numsSize) {
+    int result = singleNumber(nums, numsSize);
+    printf("结果为：%d\n\n", result);
+}
+
 int main() {
     const int nums1[] = {2, 2, 1};
     const int nums2[] = {4, 1, 2, 1, 2};
     const int nums3[] = {1};
 
-    const int result1 = singleNumber(nums1, sizeof(nums1) / sizeof(nums1[0]));
-    printf("结果为：%d\n\n", result1);
-
-    const int result2 = singleNumber(nums2, sizeof(nums2) / sizeof(nums2[0]));
-    printf("结果为：%d\n\n", result2);
-
-    const int result3 = singleNumber(nums3, sizeof(nums3) / sizeof(nums3[0]));
-    printf("结果为：%d\n\n", result3);
+    printResult(nums1, Len(nums1));
+    printResult(nums2, Len(nums2));
+    printResult(nums3, Len(nums3));
 
     return 0;
 }
