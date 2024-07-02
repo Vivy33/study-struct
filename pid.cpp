@@ -99,14 +99,15 @@ void parse_maps_file(int pid) {
 }
 
 // 查找 VMA
-VMA find_vma(int pid, size_t addr) {
+int find_vma(int pid, size_t addr, VMA* vma) {
     printf("在 PID %d 中搜索地址 0x%lx\n", pid, addr);
     auto addrIterator = addr_vma_map.find(addr);
     if (addrIterator != addr_vma_map.end()) {
         printf("找到地址 0x%lx 的 VMA\n", addr);
-        return addrIterator -> second;
+        *vma = addrIterator -> second;
+        return 0; // 成功找到
     }
-    throw std::runtime_error("找不到给定地址的 VMA。");
+    return 1; // 找不到
 }
 
 // 清理资源
@@ -135,12 +136,15 @@ int main(int argc, char* argv[]) {
     int pid = std::stoi(argv[1]);
     size_t addr = std::stoull(argv[2], nullptr, 16);
 
-    try {
-        parse_maps_file(pid);
-        VMA vma = find_vma(pid, addr);
+    parse_maps_file(pid);
+
+    VMA vma;
+    if (find_vma(pid, addr, &vma) == 0) {
         print_vma_info(vma);
-    } catch (const std::exception& e) {
-        printf("错误: %s\n", e.what());
+    } else {
+        printf("错误: 找不到给定地址的 VMA。\n");
+        cleanup();
+        return 1; // 返回错误状态码
     }
 
     cleanup();
