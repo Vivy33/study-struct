@@ -32,6 +32,7 @@ map2<addr, vma>
 #include <vector>
 #include <string>
 #include <iomanip>
+#include <unistd.h>
 
 // 定义 VMA 结构体
 struct VMA {
@@ -100,10 +101,10 @@ void parse_maps_file(int pid) {
 // 查找 VMA
 VMA find_vma(int pid, size_t addr) {
     printf("在 PID %d 中搜索地址 0x%lx\n", pid, addr);
-    auto it = addr_vma_map.find(addr);
-    if (it != addr_vma_map.end()) {
+    auto addrIterator = addr_vma_map.find(addr);
+    if (addrIterator != addr_vma_map.end()) {
         printf("找到地址 0x%lx 的 VMA\n", addr);
-        return it->second;
+        return addrIterator -> second;
     }
     throw std::runtime_error("找不到给定地址的 VMA。");
 }
