@@ -33,6 +33,7 @@ map2<addr, vma>
 #include <string>
 #include <iomanip>
 #include <unistd.h>
+#include <utility> // for std::move
 
 // 定义 VMA 结构体
 struct VMA {
@@ -43,18 +44,19 @@ struct VMA {
     std::string filename;
 };
 
-// 全局映射
-std::map<int, std::vector<VMA>> processes_vma_maps;
-std::map<size_t, VMA> addr_vma_map;
+// 定义常量
+const int READ = 4;
+const int WRITE = 2;
+const int EXECUTE = 1;
 
 // 解析标记
 unsigned int parse_flags(const std::string& flags) {
     unsigned int result = 0;
     if (flags.size() != 4) return result;
 
-    if (flags[0] == 'r') result |= 4; // read
-    if (flags[1] == 'w') result |= 2; // write
-    if (flags[2] == 'x') result |= 1; // execute
+    if (flags[0] == 'r') result |= READ; 
+    if (flags[1] == 'w') result |= WRITE; 
+    if (flags[2] == 'x') result |= EXECUTE; 
 
     return result;
 }
@@ -63,10 +65,20 @@ unsigned int parse_flags(const std::string& flags) {
 VMA parse_line(const std::string& line) {
     std::istringstream iss(line);
     std::string start_end, flags, offset, dev, inode, pathname;
-    iss >> start_end >> flags >> offset >> dev >> inode;
+
+    // 使用 getline 分割字段
+    std::getline(iss, start_end, ' ');
+    std::getline(iss, flags, ' ');
+    std::getline(iss, offset, ' ');
+    std::getline(iss, dev, ' ');
+    std::getline(iss, inode, ' ');
     std::getline(iss, pathname);
 
     size_t dash_pos = start_end.find('-');
+    if (dash_pos == std::string::npos) {
+        throw std::runtime_error("Invalid format: missing '-' in start-end range.");
+    }
+    
     size_t start = std::stoull(start_end.substr(0, dash_pos), nullptr, 16);
     size_t end = std::stoull(start_end.substr(dash_pos + 1), nullptr, 16);
     int parsed_flags = parse_flags(flags);
@@ -76,11 +88,10 @@ VMA parse_line(const std::string& line) {
 }
 
 // 解析 /proc/[pid]/maps 文件
-void parse_maps_file(int pid) {
+void parse_maps_file(int pid, std::vector<VMA>& vmas, std::map<size_t, const VMA*>& addr_vma_map) {
     printf("解析 PID 为 %d 的 maps 文件\n", pid);
     std::ifstream maps_file("/proc/" + std::to_string(pid) + "/maps");
     std::string line;
-    std::vector<VMA> vmas;
 
     while (std::getline(maps_file, line)) {
         printf("读取行: %s\n", line.c_str());
@@ -88,33 +99,27 @@ void parse_maps_file(int pid) {
         printf("解析到的 VMA: start=0x%lx, end=0x%lx, flags=%d, offset=0x%lx, filename=%s\n", 
                vma.start, vma.end, vma.flags, vma.offset, vma.filename.c_str());
 
-        vmas.push_back(vma);
+        // 使用std::move来避免拷贝
+        vmas.push_back(std::move(vma));
 
-        for (size_t addr = vma.start; addr < vma.end; ++addr) {
-            addr_vma_map[addr] = vma;
-        }
+        // 使用指向 vma 的指针来避免数据重复
+        addr_vma_map[vmas.back().start] = &vmas.back();
     }
-
-    processes_vma_maps[pid] = vmas;
 }
 
 // 查找 VMA
-int find_vma(int pid, size_t addr, VMA* vma) {
-    printf("在 PID %d 中搜索地址 0x%lx\n", pid, addr);
-    auto addrIterator = addr_vma_map.find(addr);
-    if (addrIterator != addr_vma_map.end()) {
-        printf("找到地址 0x%lx 的 VMA\n", addr);
-        *vma = addrIterator -> second;
-        return 0; // 成功找到
+bool find_vma(size_t addr, const std::map<size_t, const VMA*>& addr_vma_map, const VMA** vma) {
+    printf("搜索地址 0x%lx\n", addr);
+    auto it = addr_vma_map.upper_bound(addr);
+    if (it != addr_vma_map.begin()) {
+        --it;
+        if (it->second->start <= addr && addr < it->second->end) {
+            printf("找到地址 0x%lx 的 VMA\n", addr);
+            *vma = it->second;
+            return true; // 成功找到
+        }
     }
-    return 1; // 找不到
-}
-
-// 清理资源
-void cleanup() {
-    printf("清理资源\n");
-    processes_vma_maps.clear();
-    addr_vma_map.clear();
+    return false; // 找不到
 }
 
 // 打印 VMA 信息
@@ -133,21 +138,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int pid = std::stoi(argv[1]);
+    int pid = std::stoi(argv[1]); // std::stoi 字符串转换为整数
     size_t addr = std::stoull(argv[2], nullptr, 16);
 
-    parse_maps_file(pid);
+    std::vector<VMA> vmas;
+    std::map<size_t, const VMA*> addr_vma_map;
 
-    VMA vma;
-    if (find_vma(pid, addr, &vma) == 0) {
-        print_vma_info(vma);
+    parse_maps_file(pid, vmas, addr_vma_map);
+
+    const VMA* vma;
+    if (find_vma(addr, addr_vma_map, &vma)) {
+        print_vma_info(*vma);
     } else {
         printf("错误: 找不到给定地址的 VMA。\n");
-        cleanup();
         return 1; // 返回错误状态码
     }
-
-    cleanup();
 
     return 0;
 }
