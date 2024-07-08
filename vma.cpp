@@ -69,18 +69,23 @@ unsigned int parse_flags(const std::string& flags) {
 
 vma parse_line(const std::string& line) {
     std::istringstream iss(line);
-    std::string start_end, flags, offset, dev, inode;
-    std::string pathname;
+    std::string start_end, flags, offset, dev, inode, pathname;
 
-    iss >> start_end >> flags >> offset >> dev >> inode;
+    // 使用 getline 分割字段
+    std::getline(iss, start_end, ' ');
+    std::getline(iss, flags, ' ');
+    std::getline(iss, offset, ' ');
+    std::getline(iss, dev, ' ');
+    std::getline(iss, inode, ' ');
     std::getline(iss, pathname);
+
     if (!pathname.empty() && pathname[0] == ' ') {
         pathname.erase(0, 1); // 去除前导空格
     }
 
     size_t dash_pos = start_end.find('-');
     if (dash_pos == std::string::npos) {
-        return {0, 0, 0, 0, "", false};
+        throw std::runtime_error("Invalid format: missing '-' in start-end range.");
     }
 
     uint64_t start = std::stoull(start_end.substr(0, dash_pos), nullptr, 16);
