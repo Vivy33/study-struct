@@ -1,0 +1,4 @@
+g++ -o ipc_program main.c process_a.c process_b.c ringbuffer.c shared_memory.c -lrt
+
+这里使用了 -lrt 库来链接实时库，这是因为我们使用了 POSIX 共享内存函数。
+确保系统上已经安装了 librt，如果没有，请通过包管理器安装
