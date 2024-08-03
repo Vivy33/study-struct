@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int create_shared_memory(const char* const name, const size_t size) {
-    const int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
+int create_shared_memory(const char* name, size_t size) {
+    int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
     if (fd == -1) {
         perror("shm_open");
         exit(1);
@@ -20,8 +20,8 @@ int create_shared_memory(const char* const name, const size_t size) {
     return fd;
 }
 
-RingBuffer* map_shared_memory(const int fd, const size_t size) {
-    void* const addr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+RingBuffer* map_shared_memory(int fd, size_t size) {
+    void* addr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
         perror("mmap");
         exit(1);
