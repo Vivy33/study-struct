@@ -1,18 +1,21 @@
-//读写文件，统计单词，空格分词个数
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
-#define NUM_THREADS 4   // 定义线程数量
-#define CHUNK_SIZE 4096  // 定义每个线程处理的块大小
+#define NUM_THREADS 8  // 定义线程数量，视情况可增加
+#define READ_SIZE 1048576  // 每次读取的块大小 1MB
+#define LOOKAHEAD_SIZE 1024  // 额外读取的字节数以确保完整单词
 
 typedef struct {
-    FILE *file;  // 指向文件的指针
-    long offset;  // 文件偏移量
-    int length;  // 要读取的长度
-    int word_count;  // 记录单词数量
+    int fd;             // 文件描述符
+    off_t offset;       // 文件偏移量
+    size_t length;      // 要读取的长度
+    int word_count;     // 记录单词数量
 } ThreadData;
 
 pthread_mutex_t lock;  // 定义互斥锁
@@ -20,35 +23,59 @@ pthread_mutex_t lock;  // 定义互斥锁
 // 线程执行的函数，计算文本中的单词数量
 void *count_words(void *arg) {
     ThreadData *data = (ThreadData *)arg;  // 将传入的参数转换为 ThreadData 类型
-    FILE *file = data->file;  // 获取文件指针
-    long offset = data->offset;  // 获取文件偏移量
-    int length = data->length;  // 获取要读取的长度
-    int count = 0;  // 初始化单词计数
-    int in_word = 0;  // 标志是否在单词中
+    int fd = data->fd;                     // 获取文件描述符
+    off_t offset = data->offset;           // 获取文件偏移量
+    size_t length = data->length;          // 获取要读取的长度
+    int count = 0;                         // 初始化单词计数
+    int in_word = 0;                       // 标志是否在单词中
 
-    char *buffer = (char *)malloc(length + 1);  // 为读取的内容分配内存
+    char *buffer = (char *)malloc(READ_SIZE + LOOKAHEAD_SIZE + 1);  // 为读取的内容分配内存
     if (buffer == NULL) {
         perror("Error allocating memory");
         return NULL;  // 内存分配失败，退出线程
     }
 
-    pthread_mutex_lock(&lock);  // 加锁
-    fseek(file, offset, SEEK_SET);  // 将文件指针移动到指定偏移量
-    size_t read_size = fread(buffer, 1, length, file);  // 读取文件内容到缓冲区
-    pthread_mutex_unlock(&lock);  // 解锁
+    while (length > 0) {
+        size_t to_read = length > READ_SIZE ? READ_SIZE : length;
 
-    buffer[read_size] = '\0';  // 确保文本以空字符结尾
+        pthread_mutex_lock(&lock);  // 加锁
+        ssize_t read_size = pread(fd, buffer, to_read + LOOKAHEAD_SIZE, offset);  // 从指定偏移量读取文件内容到缓冲区
+        pthread_mutex_unlock(&lock);  // 解锁
 
-    // 遍历文本，计算单词数量
-    for (int i = 0; i < read_size; i++) {
-        if (buffer[i] == ' ' || buffer[i] == '\n' || buffer[i] == '\t' || buffer[i] == '\0') {
-            if (in_word) {
-                count++;  // 如果之前在单词中，现在遇到空白字符，单词计数加1
-                in_word = 0;  // 重置 in_word 标志
-            }
-        } else {
-            in_word = 1;  // 如果遇到非空白字符，设置 in_word 标志
+        if (read_size < 0) {
+            perror("Error reading file");
+            free(buffer);
+            return NULL;  // 读取失败，退出线程
         }
+
+        // 如果读取到的字节数少于请求的字节数，说明已到文件末尾
+        if (read_size < to_read + LOOKAHEAD_SIZE) {
+            buffer[read_size] = '\0';  // 确保文本以空字符结尾
+        } else {
+            // 向前或向后查看，确保在单词边界处结束
+            ssize_t lookahead = LOOKAHEAD_SIZE;
+            while (lookahead > 0 && buffer[to_read + lookahead - 1] != ' ' && buffer[to_read + lookahead - 1] != '\n' &&
+                   buffer[to_read + lookahead - 1] != '\t' && buffer[to_read + lookahead - 1] != '\0') {
+                lookahead--;
+            }
+            buffer[to_read + lookahead] = '\0';  // 确保在单词边界处结束
+            read_size = to_read + lookahead;
+        }
+
+        // 遍历文本，计算单词数量
+        for (ssize_t i = 0; i < read_size; i++) {
+            if (buffer[i] == ' ' || buffer[i] == '\n' || buffer[i] == '\t' || buffer[i] == '\0') {
+                if (in_word) {
+                    count++;  // 如果之前在单词中，现在遇到空白字符，单词计数加1
+                    in_word = 0;  // 重置 in_word 标志
+                }
+            } else {
+                in_word = 1;  // 如果遇到非空白字符，设置 in_word 标志
+            }
+        }
+
+        offset += read_size;  // 更新偏移量
+        length -= read_size;  // 更新剩余读取长度
     }
 
     if (in_word) {
@@ -57,24 +84,27 @@ void *count_words(void *arg) {
 
     data->word_count = count;  // 将计算出的单词数量保存到数据结构中
 
-    free(buffer);  // 释放分配的内存
-
+    free(buffer);  // 释放内存
     return NULL;  // 函数自然退出
 }
 
 int main() {
     printf("Opening file...\n");
-    FILE *file = fopen("english.txt", "r");  // 打开文件
-    if (file == NULL) {
+    int fd = open("english.txt", O_RDONLY);  // 打开文件
+    if (fd < 0) {
         perror("Error opening file");
         abort();  // 如果打开文件失败，终止程序
     }
 
     printf("File opened successfully.\n");
 
-    fseek(file, 0, SEEK_END);  // 将文件指针移动到文件末尾
-    long file_size = ftell(file);  // 获取文件大小
-    fseek(file, 0, SEEK_SET);  // 将文件指针重新指向文件开头
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        perror("Error getting file size");
+        close(fd);
+        abort();  // 如果获取文件大小失败，终止程序
+    }
+    off_t file_size = st.st_size;  // 获取文件大小
 
     printf("File size: %ld bytes\n", file_size);
 
@@ -83,17 +113,17 @@ int main() {
 
     pthread_mutex_init(&lock, NULL);  // 初始化互斥锁
 
-    int chunk_size = file_size / NUM_THREADS;  // 计算每个线程处理的文本块大小
+    size_t chunk_size = file_size / NUM_THREADS;  // 计算每个线程处理的文本块大小
     for (int i = 0; i < NUM_THREADS; i++) {
         printf("Creating thread %d...\n", i);
-        thread_data[i].file = file;  // 设置文件指针
+        thread_data[i].fd = fd;  // 设置文件描述符
         thread_data[i].offset = i * chunk_size;  // 设置文件偏移量
         thread_data[i].length = (i == NUM_THREADS - 1) ? file_size - i * chunk_size : chunk_size;  // 设置文本块长度
         thread_data[i].word_count = 0;  // 初始化单词计数
         int ret = pthread_create(&threads[i], NULL, count_words, &thread_data[i]);  // 创建线程
         if (ret != 0) {
             perror("Error creating thread");
-            fclose(file);
+            close(fd);
             abort();  // 如果创建线程失败，终止程序
         }
         printf("Thread %d created successfully.\n", i);
@@ -108,7 +138,7 @@ int main() {
     }
 
     pthread_mutex_destroy(&lock);  // 销毁互斥锁
-    fclose(file);  // 关闭文件
+    close(fd);  // 关闭文件
 
     printf("Total word count: %d\n", total_word_count);  // 输出总单词计数结果
 
