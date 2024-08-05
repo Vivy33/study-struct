@@ -24,6 +24,22 @@ struct TreeNode* createNode(int val) {
     return node;
 }
 
+// 插入节点到二叉树中
+struct TreeNode* insertNode(struct TreeNode* root, int val) {
+    if (root == NULL) {
+        printf("Inserting new node with value %d\n", val);
+        return createNode(val);
+    }
+    if (val < root->val) {
+        printf("Going left from node with value %d\n", root->val);
+        root->left = insertNode(root->left, val);
+    } else {
+        printf("Going right from node with value %d\n", root->val);
+        root->right = insertNode(root->right, val);
+    }
+    return root;
+}
+
 // 递归计算二叉树的最大深度
 int maxDepth(const struct TreeNode* root) {
     if (root == NULL) {
@@ -56,11 +72,12 @@ void freeTree(struct TreeNode* root) {
 // 主函数进行测试
 int main() {
     // 构建测试二叉树
-    struct TreeNode* root = createNode(3);
-    root->left = createNode(9);
-    root->right = createNode(20);
-    root->right->left = createNode(15);
-    root->right->right = createNode(7);
+    struct TreeNode* root = NULL;
+    root = insertNode(root, 3);
+    root = insertNode(root, 9);
+    root = insertNode(root, 20);
+    root = insertNode(root, 15);
+    root = insertNode(root, 7);
     
     // 计算最大深度
     printf("Calculating the maximum depth of the binary tree...\n");
@@ -73,3 +90,4 @@ int main() {
     
     return 0;
 }
+
