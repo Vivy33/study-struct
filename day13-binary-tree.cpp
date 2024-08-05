@@ -1,34 +1,47 @@
-/*给定一个二叉树 root ，返回其最大深度。
-
-二叉树的 最大深度 是指从根节点到最远叶子节点的最长路径上的节点数。
-
-输入：root = [3,9,20,null,null,15,7]
-输出：3用c语言，能加const的加const，需要释放内存的释放，在每个循环处加printf来表示当前的操作*/
-
 #include <stdio.h>
 #include <stdlib.h>
 
 // 定义二叉树节点结构
-struct TreeNode {
+typedef struct TreeNode {
     int val;
     struct TreeNode *left;
     struct TreeNode *right;
-};
+} TreeNode;
+
+// 定义树根的别名
+typedef struct {
+    TreeNode *root;
+} Tree;
 
 // 创建一个新的二叉树节点
-struct TreeNode* createNode(int val) {
-    struct TreeNode* node = (struct TreeNode*)malloc(sizeof(struct TreeNode));
+TreeNode* createNode(int val) {
+    TreeNode* node = (TreeNode*)malloc(sizeof(TreeNode));
+    if (node == NULL) {
+        perror("Failed to allocate memory for new node");
+        exit(EXIT_FAILURE);
+    }
     node->val = val;
     node->left = NULL;
     node->right = NULL;
     return node;
 }
 
+// 创建一个新的树
+Tree* createTree() {
+    Tree* tree = (Tree*)malloc(sizeof(Tree));
+    if (tree == NULL) {
+        perror("Failed to allocate memory for new tree");
+        exit(EXIT_FAILURE);
+    }
+    tree->root = NULL;
+    return tree;
+}
+
 // 插入节点到二叉树中
-struct TreeNode* insertNode(struct TreeNode* root, int val) {
+TreeNode* insertNode(TreeNode* root, int val) {
     if (root == NULL) {
-        printf("Inserting new node with value %d\n", val);
-        return createNode(val);
+        printf("Cannot insert into an empty tree. Create the root first.\n");
+        return NULL;
     }
     if (val < root->val) {
         printf("Going left from node with value %d\n", root->val);
@@ -40,8 +53,19 @@ struct TreeNode* insertNode(struct TreeNode* root, int val) {
     return root;
 }
 
+// 在树中插入根节点
+void insertRoot(Tree* tree, int val) {
+    if (tree->root != NULL) {
+        printf("Root already exists. Inserting into existing tree.\n");
+        insertNode(tree->root, val);
+    } else {
+        printf("Creating root node with value %d\n", val);
+        tree->root = createNode(val);
+    }
+}
+
 // 递归计算二叉树的最大深度
-int maxDepth(const struct TreeNode* root) {
+int maxDepth(const TreeNode* root) {
     if (root == NULL) {
         printf("Reached a leaf node, returning 0\n");
         return 0;
@@ -58,7 +82,7 @@ int maxDepth(const struct TreeNode* root) {
 }
 
 // 释放二叉树的内存
-void freeTree(struct TreeNode* root) {
+void freeTree(TreeNode* root) {
     if (root == NULL) {
         return;
     }
@@ -71,23 +95,27 @@ void freeTree(struct TreeNode* root) {
 
 // 主函数进行测试
 int main() {
+    // 创建一棵新的树
+    Tree* tree = createTree();
+    
     // 构建测试二叉树
-    struct TreeNode* root = NULL;
-    root = insertNode(root, 3);
-    root = insertNode(root, 9);
-    root = insertNode(root, 20);
-    root = insertNode(root, 15);
-    root = insertNode(root, 7);
+    insertRoot(tree, 3);   // 创建根节点
+    insertRoot(tree, 9);   // 插入节点
+    insertRoot(tree, 20);  // 插入节点
+    insertRoot(tree, 15);  // 插入节点
+    insertRoot(tree, 7);   // 插入节点
     
     // 计算最大深度
     printf("Calculating the maximum depth of the binary tree...\n");
-    int depth = maxDepth(root);
+    int depth = maxDepth(tree->root);
     printf("The maximum depth of the binary tree is: %d\n", depth);
     
     // 释放二叉树内存
     printf("Freeing the binary tree...\n");
-    freeTree(root);
+    freeTree(tree->root);
+    
+    // 释放树的结构
+    free(tree);
     
     return 0;
 }
-
