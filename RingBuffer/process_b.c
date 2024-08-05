@@ -1,19 +1,12 @@
 #include "shared_memory.h"
+#include "ringbuffer.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-#define SHM_NAME_X "/shm_x"
-#define SHM_NAME_Y "/shm_y"
 #define MESSAGE_SIZE 100
 
-void process_b() {
-    int shm_fd_x = create_shared_memory(SHM_NAME_X, sizeof(RingBuffer));
-    RingBuffer* rb_x = map_shared_memory(shm_fd_x, sizeof(RingBuffer));
-
-    int shm_fd_y = create_shared_memory(SHM_NAME_Y, sizeof(RingBuffer));
-    RingBuffer* rb_y = map_shared_memory(shm_fd_y, sizeof(RingBuffer));
-
+void process_b(RingBuffer* rb_x, RingBuffer* rb_y) {
     char buffer[MESSAGE_SIZE];
     while (ringbuffer_is_empty(rb_x)) {
         usleep(1000); // Wait for data from A
