@@ -1,0 +1,2 @@
+g++ -o elf_parser main.c elf.c
+./elf_parser <path_to_elf_file>
