@@ -17,46 +17,61 @@
 [4,5] --> "4->5"
 [7,7] --> "7" */
 
-#include <iostream>
-#include <vector>
-#include <string>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-std::vector<std::string> summaryRanges(const std::vector<int>& nums) {
-    std::vector<std::string> ranges;
-    int n = nums.size();
-    
-    if (n == 0) return ranges;
-    
+typedef struct {
+    int start;
+    int end;
+} Range;
+
+Range* summaryRanges(const int* nums, int numsSize, int* returnSize) {
+    if (numsSize == 0) {
+        *returnSize = 0;
+        return NULL;
+    }
+
+    Range* ranges = (Range*)malloc(numsSize * sizeof(Range));
+    int rangeCount = 0;
+
     int start = nums[0];
-    
-    for (int i = 1; i <= n; ++i) {
-        printf("Current index: %d\n", i);
-        if (i == n || nums[i] != nums[i - 1] + 1) {
-            if (nums[i - 1] == start) {
-                ranges.push_back(std::to_string(start));
-                printf("Adding range: %s\n", std::to_string(start).c_str());
-            } else {
-                ranges.push_back(std::to_string(start) + "->" + std::to_string(nums[i - 1]));
-                printf("Adding range: %s\n", (std::to_string(start) + "->" + std::to_string(nums[i - 1])).c_str());
-            }
-            if (i < n) {
+
+    for (int i = 1; i <= numsSize; ++i) {
+        if (i == numsSize || nums[i] != nums[i - 1] + 1) {
+            ranges[rangeCount].start = start;
+            ranges[rangeCount].end = nums[i - 1];
+            rangeCount++;
+            if (i < numsSize) {
                 start = nums[i];
-                printf("New start: %d\n", start);
             }
         }
     }
-    
+
+    *returnSize = rangeCount;
     return ranges;
 }
 
-int main() {
-    const std::vector<int> nums = {0, 1, 2, 4, 5, 7};
-    std::vector<std::string> result = summaryRanges(nums);
-    
-    printf("Final result:\n");
-    for (const std::string& range : result) {
-        printf("%s\n", range.c_str());
+void printRanges(const Range* ranges, int size) {
+    for (int i = 0; i < size; ++i) {
+        if (ranges[i].start == ranges[i].end) {
+            printf("%d\n", ranges[i].start);
+        } else {
+            printf("%d->%d\n", ranges[i].start, ranges[i].end);
+        }
     }
-    
+}
+
+int main() {
+    const int nums[] = {0, 1, 2, 4, 5, 7};
+    int numsSize = sizeof(nums) / sizeof(nums[0]);
+    int returnSize;
+
+    Range* result = summaryRanges(nums, numsSize, &returnSize);
+
+    printf("Final result:\n");
+    printRanges(result, returnSize);
+
+    free(result);
     return 0;
 }
