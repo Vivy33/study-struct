@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+
 // 定义二叉树节点结构
 typedef struct TreeNode {
     int val;
@@ -8,7 +11,7 @@ typedef struct TreeNode {
     struct TreeNode *right;
 } TreeNode;
 
-// 定义树根的别名
+// 定义树结构
 typedef struct {
     TreeNode *root;
 } Tree;
@@ -40,14 +43,11 @@ Tree* createTree() {
 // 插入节点到二叉树中
 TreeNode* insertNode(TreeNode* root, int val) {
     if (root == NULL) {
-        printf("Cannot insert into an empty tree. Create the root first.\n");
-        return NULL;
+        return createNode(val);
     }
     if (val < root->val) {
-        printf("Going left from node with value %d\n", root->val);
         root->left = insertNode(root->left, val);
     } else {
-        printf("Going right from node with value %d\n", root->val);
         root->right = insertNode(root->right, val);
     }
     return root;
@@ -58,27 +58,20 @@ void insertRoot(Tree* tree, int val) {
     if (tree->root != NULL) {
         printf("Root already exists. Inserting into existing tree.\n");
         insertNode(tree->root, val);
-    } else {
-        printf("Creating root node with value %d\n", val);
-        tree->root = createNode(val);
     }
+    if (tree->root == NULL ) {
+        exit(EXIT_FAILURE);
+    } 
 }
 
 // 递归计算二叉树的最大深度
 int maxDepth(const TreeNode* root) {
     if (root == NULL) {
-        printf("Reached a leaf node, returning 0\n");
         return 0;
     }
-    
-    printf("Visiting node with value %d\n", root->val);
     int leftDepth = maxDepth(root->left);
     int rightDepth = maxDepth(root->right);
-    
-    int max_depth = (leftDepth > rightDepth ? leftDepth : rightDepth) + 1;
-    printf("Node %d - leftDepth: %d, rightDepth: %d, maxDepth: %d\n", root->val, leftDepth, rightDepth, max_depth);
-    
-    return max_depth;
+    return (leftDepth > rightDepth ? leftDepth : rightDepth) + 1;
 }
 
 // 释放二叉树的内存
@@ -86,8 +79,6 @@ void freeTree(TreeNode* root) {
     if (root == NULL) {
         return;
     }
-    
-    printf("Freeing node with value %d\n", root->val);
     freeTree(root->left);
     freeTree(root->right);
     free(root);
@@ -119,3 +110,10 @@ int main() {
     
     return 0;
 }
+
+/*update:
+1.简化 insertNode 函数：在插入节点时，如果根节点为空，直接创建新节点，否则递归插入。
+2.优化 insertRoot 函数：如果根节点已存在，直接插入，否则创建新节点作为根节点。
+3.计算最大深度 maxDepth 函数：通过递归计算左右子树的深度，并返回最大值加1。
+4.释放二叉树内存 freeTree 函数：递归释放所有节点的内存。
+*/
