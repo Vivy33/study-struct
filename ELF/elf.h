@@ -53,5 +53,6 @@ typedef struct {
 void print_elf_header(const Elf64_Ehdr *header);
 void print_program_headers(const Elf64_Phdr *phdrs, uint16_t phnum);
 void print_section_headers(const Elf64_Shdr *shdrs, uint16_t shnum);
+void print_symbol_table(int fd, Elf64_Shdr *shdrs, uint16_t shnum, char *shstrtab);
 
 #endif // ELF_H
