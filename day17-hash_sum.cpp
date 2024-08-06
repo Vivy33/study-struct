@@ -27,13 +27,11 @@ typedef struct {
 #define HASH_SIZE 2048
 
 // 创建哈希表
-HashItem* createHashTable() {
-    HashItem* hashTable = (HashItem*)malloc(sizeof(HashItem) * HASH_SIZE);
+void createHashTable(HashItem* hashTable) {
     for (int i = 0; i < HASH_SIZE; i++) {
         hashTable[i].key = -1;
         hashTable[i].value = -1;
     }
-    return hashTable;
 }
 
 // 哈希函数
@@ -63,10 +61,10 @@ int search(HashItem* hashTable, int key) {
     return -1;
 }
 
-int* twoSum(const int* nums, int numsSize, const int target, int* returnSize) {
-    HashItem* hashTable = createHashTable();
-    int* result = (int*)malloc(2 * sizeof(int));
-    
+void twoSum(const int* nums, int numsSize, const int target, int* result) {
+    HashItem hashTable[HASH_SIZE]; // 使用静态数组作为哈希表
+    createHashTable(hashTable);
+
     for (int i = 0; i < numsSize; i++) {
         printf("Checking element nums[%d] = %d\n", i, nums[i]);
         int complement = target - nums[i];
@@ -74,28 +72,25 @@ int* twoSum(const int* nums, int numsSize, const int target, int* returnSize) {
         if (complementIndex != -1) {
             result[0] = complementIndex;
             result[1] = i;
-            *returnSize = 2;
-            free(hashTable);
-            return result;
+            return; // 找到结果后返回
         }
         insert(hashTable, nums[i], i);
         printf("Inserted nums[%d] = %d into hashTable\n", i, nums[i]);
     }
 
-    *returnSize = 0;
-    free(hashTable);
-    return NULL;
+    result[0] = -1; // 如果没有找到结果，返回特殊值
+    result[1] = -1;
 }
 
 int main() {
     int nums[] = {2, 7, 11, 15};
     int target = 9;
-    int returnSize;
-    int* result = twoSum(nums, 4, target, &returnSize);
+    int result[2];
 
-    if (result) {
+    twoSum(nums, 4, target, result);
+
+    if (result[0] != -1) {
         printf("Indices: [%d, %d]\n", result[0], result[1]);
-        free(result);
     } else {
         printf("No solution found\n");
     }
