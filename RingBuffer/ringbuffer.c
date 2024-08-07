@@ -3,8 +3,8 @@
 #include <stdatomic.h>
 
 void ringbuffer_init(RingBuffer* rb) {
-    rb->head = 0;
-    rb->tail = 0;
+    atomic_store(&rb->head, 0);
+    atomic_store(&rb->tail, 0);
     rb->size = RINGBUFFER_SIZE;
 }
 
@@ -34,14 +34,15 @@ int ringbuffer_read(RingBuffer* rb, char* data, int length) {
         return 0;
     }
 
-    int count = 0;
-    for (int i = 0; i < length; i++) {
-        if (ringbuffer_is_empty(rb)) {
-            break;
-        }
+    int initial_head = atomic_load(&rb->head);
+    int initial_tail = atomic_load(&rb->tail);
+    int available_data = (initial_head - initial_tail + rb->size) % rb->size;
+
+    int count = length < available_data ? length : available_data;
+
+    for (int i = 0; i < count; i++) {
         data[i] = rb->buffer[atomic_load(&rb->tail)];
         atomic_store(&rb->tail, (atomic_load(&rb->tail) + 1) % rb->size);
-        count++;
     }
 
     return count;
