@@ -2,14 +2,15 @@
 #define RINGBUFFER_H
 
 #include <stdbool.h>
+#include <stdatomic.h>
 
 #define RINGBUFFER_SIZE 1024
 
 typedef struct {
-    int head;
-    int tail;
-    int size;
     char buffer[RINGBUFFER_SIZE];
+    atomic_int head;
+    atomic_int tail;
+    int size;
 } RingBuffer;
 
 void ringbuffer_init(RingBuffer* rb);
