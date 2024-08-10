@@ -147,6 +147,7 @@ void read_elf_file(const char *filename, struct elf_info *elf_info) {
 
 const char* get_symbol_name_by_address(struct elf_info *elf_info, uint64_t address) {
     Elf *elf = elf_memory((char*) &elf_info->header, sizeof(elf_info->header));
+
     if (elf == NULL) {
         fprintf(stderr, "Error: elf_memory() failed: %s\n", elf_errmsg(-1));
         return NULL;
@@ -159,6 +160,13 @@ const char* get_symbol_name_by_address(struct elf_info *elf_info, uint64_t addre
             for (int j = 0; j < num_symbols; j++) {
                 GElf_Sym sym;
                 gelf_getsym(data, j, &sym);
+                Elf_Scn *sec=elf_getscn(elf, sym.st_shndx);
+                if (!sec)
+                    continue;
+
+                GElf_Shdr shdr;
+                gelf_getshdr(sec, &shdr);
+                sym.st_value - shdr.sh_addr - shdr.sh_offset;
                 if (address >= sym.st_value && address < (sym.st_value + sym.st_size)) {
                     const char *name = elf_strptr(elf, elf_info->shdrs[i].sh_link, sym.st_name);
                     elf_end(elf);

@@ -41,8 +41,22 @@ struct elf_info {
     char *shstrtab;
 };
 
+// 定义符号结构
+struct symbol {
+    uint64_t start;
+    uint64_t end;
+    char* name;
+};
+
+// 定义 ELF 符号结构
+struct elf_symbol {
+    char* elf_name;
+    int symbol_count;
+    struct symbol* syms;
+};
+
 unsigned int parse_process_maps(struct process* proc);
-struct process* create_process(struct system_info* system_info, int pid);
+struct process* read_process_info(struct system_info* system_info, int pid);
 int get_process_vma_info(struct system_info* system_info, int pid, uint64_t addr, struct vma* out_vma);
 void print_vma_info(const struct vma* vma_info);
 
