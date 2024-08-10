@@ -98,43 +98,43 @@ int main(int argc, char* argv[]) {
     }
 
     int pid = atoi(argv[1]);
-    uint64_t pc = strtoull(argv[2], NULL, 16);
+    uint64_t real_addr = strtoull(argv[2], NULL, 16);
 
     struct system_info system_info = {0};
 
     // 查找或创建进程
     struct process* proc = find_new_process(&system_info, pid);
     if (!proc) {
-        fprintf(stderr, "Failed to create or find process for pid %d\n", pid);
+        fprintf(stderr, "无法创建或查找 PID 为 %d 的进程\n", pid);
         return 1;
     }
 
     // 查找 VMA
-    struct vma* vma_info = find_vma_from_process(proc, pc);
+    struct vma* vma_info = find_vma_from_process(proc, real_addr);
     if (!vma_info) {
-        fprintf(stderr, "Failed to get VMA info for address 0x%lx\n", pc);
+        fprintf(stderr, "无法获取地址 0x%lx 的 VMA 信息\n", real_addr);
         return 1;
     }
 
     print_vma_info(vma_info);
 
     // 计算 ELF 中的相对地址
-    uint64_t relative_address = get_relative_address(pc, vma_info);
-    printf("Relative address in ELF: 0x%lx\n", relative_address);
+    uint64_t relative_address = get_relative_address(real_addr, vma_info);
+    printf("ELF 中的相对地址: 0x%lx\n", relative_address);
 
     // 获取 ELF 符号
     struct elf_symbol* elf_sym = get_elf_func_symbols(vma_info->name);
     if (!elf_sym) {
-        fprintf(stderr, "Failed to get ELF symbols from %s\n", vma_info->name);
+        fprintf(stderr, "无法从 %s 获取 ELF 符号\n", vma_info->name);
         return 1;
     }
 
     // 查找符号名称
     const char* symbol_name = find_symbol_name_from_elf(elf_sym, relative_address);
     if (symbol_name) {
-        printf("Function name: %s\n", symbol_name);
+        printf("函数名称: %s\n", symbol_name);
     } else {
-        printf("Function name not found\n");
+        printf("未找到函数名称\n");
     }
 
     // 释放内存
