@@ -6,6 +6,8 @@
 
 #include "process_info.h"
 
+#define INITIAL_VMA_CAPACITY 10
+
 // 解析进程的内存映射信息
 unsigned int parse_process_maps(struct process* proc) {
     char path[256];
@@ -19,7 +21,32 @@ unsigned int parse_process_maps(struct process* proc) {
 
     char line[256];
     unsigned int flags = 0;
+    
+    // 初始分配内存空间
+    int capacity = INITIAL_VMA_CAPACITY;
+    proc->vmas = malloc(capacity * sizeof(struct vma));
+    if (!proc->vmas) {
+        perror("Failed to allocate memory for VMAs");
+        fclose(file);
+        return 1;
+    }
+
     while (fgets(line, sizeof(line), file)) {
+        if (proc->num_vmas >= capacity) {
+            // 如果空间不够，增加容量
+            capacity *= 2;
+            struct vma* new_vmas = malloc(capacity * sizeof(struct vma));
+            if (!new_vmas) {
+                perror("Failed to allocate memory for VMAs");
+                free(proc->vmas);
+                fclose(file);
+                return 1;
+            }
+            memcpy(new_vmas, proc->vmas, proc->num_vmas * sizeof(struct vma));
+            free(proc->vmas);
+            proc->vmas = new_vmas;
+        }
+
         struct vma vma;
         char perm[5] = {0};
         char name[256] = {0};
@@ -38,16 +65,8 @@ unsigned int parse_process_maps(struct process* proc) {
         }
 
         vma.flags = flags;
-
         vma.name = strdup(name);
         vma.valid = 1;
-
-        proc->vmas = realloc(proc->vmas, (proc->num_vmas + 1) * sizeof(struct vma));
-        if (!proc->vmas) {
-            perror("Failed to allocate memory for VMAs");
-            fclose(file);
-            return 1;
-        }
 
         proc->vmas[proc->num_vmas++] = vma;
     }
