@@ -4,19 +4,36 @@
 
 #include "process_info.h"
 
+// 哈希函数
+unsigned int hash(int pid) {
+    return pid % HASHTABLE_SIZE;
+}
+
 // 查找进程，如果未找到返回 NULL
-struct process* find_process(struct system_info* sys_info, int pid) {
-    for (int i = 0; i < sys_info->num_procs; i++) {
-        if (sys_info->procs[i].pid == pid) {
-            return &sys_info->procs[i];
+struct process* find_process(struct hash_table* table, int pid) {
+    unsigned int index = hash(pid);
+    struct process_node* node = table->nodes[index];
+    //二分
+    while (node) {
+        int low = 0, high = node->count - 1;
+        while (low <= high) {
+            int mid = (low + high) / 2;
+            if (node->procs[mid].pid == pid) {
+                return &node->procs[mid];
+            } else if (node->procs[mid].pid < pid) {
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
         }
+        node = node->next;
     }
     return NULL;
 }
 
 // 查找进程，如果未找到则创建新进程
-struct process* find_new_process(struct system_info* sys_info, int pid) {
-    struct process* proc = find_process(sys_info, pid);
+struct process* find_new_process(struct hash_table* table, int pid) {
+    struct process* proc = find_process(table, pid);
     if (proc) {
         return proc;
     }
@@ -31,24 +48,45 @@ struct process* find_new_process(struct system_info* sys_info, int pid) {
         return NULL;
     }
 
-    // 将新进程添加到系统信息中
-    sys_info->procs = realloc(sys_info->procs, (sys_info->num_procs + 1) * sizeof(struct process));
-    if (!sys_info->procs) {
-        perror("Failed to allocate memory for new process");
-        free(new_proc.vmas);
-        return NULL;
+    // 创建新的 process_node
+    struct process_node* new_node = malloc(sizeof(struct process_node));
+    new_node->procs[0] = new_proc;
+    new_node->count = 1;
+    new_node->next = NULL;
+
+    unsigned int index = hash(pid);
+    struct process_node* current_node = table->nodes[index];
+
+    if (!current_node) {
+        table->nodes[index] = new_node;
+    } else {
+        while (current_node->next) {
+            current_node = current_node->next;
+        }
+        current_node->next = new_node;
     }
 
-    sys_info->procs[sys_info->num_procs++] = new_proc;
-    return &sys_info->procs[sys_info->num_procs - 1];
+    return &new_node->procs[0];
 }
+
 
 // 从进程中查找 VMA 信息
 struct vma* find_vma_from_process(struct process* proc, uint64_t real_addr) {
-    for (int i = 0; i < proc->num_vmas; i++) {
-        if (real_addr >= proc->vmas[i].start && real_addr < proc->vmas[i].end) {
-            return &proc->vmas[i];
+    struct vma_node* node = proc->vma_list;
+    while (node) {
+        // 使用二分查找
+        int low = 0, high = node->count - 1;
+        while (low <= high) {
+            int mid = (low + high) / 2;
+            if (real_addr >= node->vmas[mid].start && real_addr < node->vmas[mid].end) {
+                return &node->vmas[mid];
+            } else if (real_addr < node->vmas[mid].start) {
+                high = mid - 1;
+            } else {
+                low = mid + 1;
+            }
         }
+        node = node->next;
     }
     return NULL;
 }
@@ -59,15 +97,7 @@ char* get_elfname_from_vma(struct vma* vma) {
 }
 
 // 获取 ELF 文件的符号信息
-struct elf_symbol* get_elf_func_symbols(const char* filename) {
-    struct elf_symbol* elf_sym = malloc(sizeof(struct elf_symbol));
-    if (!elf_sym) {
-        return NULL;
-    }
-    // 假设已经实现了读取 ELF 符号表的逻辑
-    // ...
-    return elf_sym;
-}
+extern struct elf_symbol* get_elf_func_symbols(const char* filename);
 
 // 获取相对地址
 uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
@@ -76,13 +106,23 @@ uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
 
 // 根据相对地址查找符号名称
 char* find_symbol_name_from_elf(struct elf_symbol* syms, const uint64_t relative_address) {
-    for (int i = 0; i < syms->symbol_count; i++) {
-        if (relative_address >= syms->syms[i].start && relative_address < syms->syms[i].end) {
-            return syms->syms[i].name;
+    int left = 0;
+    int right = syms->symbol_count - 1;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        if (relative_address >= syms->syms[mid].start && relative_address < syms->syms[mid].end) {
+            return syms->syms[mid].name;
+        } else if (relative_address < syms->syms[mid].start) {
+            right = mid - 1;
+        } else {
+            left = mid + 1;
         }
     }
+
     return NULL;
 }
+
 
 // 打印使用说明
 void print_usage(const char* progname) {
@@ -140,8 +180,7 @@ int main(int argc, char* argv[]) {
     // 释放内存
     free(elf_sym->syms);
     free(elf_sym);
-    free(proc->vmas);
-    free(system_info.procs);
+    free_process_list(system_info.head);
 
     return 0;
 }

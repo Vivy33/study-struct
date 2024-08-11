@@ -1,11 +1,29 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <libelf.h>
 #include <gelf.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
 
 #include "process_info.h"
+
+struct elf_symbol {
+    char* name;
+    uint64_t address;
+    uint64_t size;
+    struct elf_symbol* next;
+};
+
+// 哈希函数
+unsigned int hash(const char* name) {
+    unsigned int hash = 5381;
+    int c;
+    while ((c = *name++)) {
+        hash = ((hash << 5) + hash) + c; // hash * 33 + c
+    }
+    return hash % HASHTABLE_SIZE;
+}
 
 // 打印 ELF 文件头信息
 void print_elf_header(const Elf64_Ehdr *header) {
@@ -74,7 +92,6 @@ void print_symbol_table(Elf *elf, Elf64_Shdr *shdrs, uint16_t shnum) {
         }
     }
 }
-
 
 // 根据地址查找符号名
 const char* get_symbol_name_by_address(Elf *elf, struct elf_info *elf_info, uint64_t address) {
@@ -149,6 +166,120 @@ void free_elf_info(struct elf_info *elf_info) {
     free(elf_info->shstrtab);
 }
 
+// 处理符号表节的逻辑，返回哈希表
+struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
+    Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
+    if (!data) {
+        fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
+        return NULL;
+    }
+
+    size_t symbol_count = shdr->sh_size / shdr->sh_entsize;
+    struct hash_table* table = malloc(sizeof(struct hash_table));
+    if (!table) {
+        fprintf(stderr, "Memory allocation failed for hash table\n");
+        return NULL;
+    }
+    memset(table, 0, sizeof(struct hash_table)); // 初始化哈希表
+
+    for (size_t i = 0; i < symbol_count; ++i) {
+        GElf_Sym sym;
+        if (gelf_getsym(data, i, &sym) != &sym) {
+            fprintf(stderr, "Failed to get symbol: %s\n", elf_errmsg(-1));
+            continue;
+        }
+
+        if (GELF_ST_TYPE(sym.st_info) == STT_FUNC) {
+            const char *name = elf_strptr(elf, shdr->sh_link, sym.st_name);
+            if (!name) {
+                fprintf(stderr, "Failed to get symbol name: %s\n", elf_errmsg(-1));
+                continue;
+            }
+
+            struct elf_symbol* new_sym = malloc(sizeof(struct elf_symbol));
+            if (!new_sym) {
+                fprintf(stderr, "Memory allocation failed\n");
+                free_elf_symbols(table->nodes[hash(name)]);
+                free(table);
+                return NULL;
+            }
+
+            new_sym->name = strdup(name);
+            new_sym->address = sym.st_value;
+            new_sym->size = sym.st_size;
+            new_sym->next = NULL;
+
+            // 插入到哈希表
+            unsigned int index = hash(name);
+            new_sym->next = table->nodes[index]; // 在哈希槽中插入
+            table->nodes[index] = new_sym;
+        }
+    }
+
+    return table;
+}
+
+// 获取 ELF 文件的符号信息
+struct hash_table* get_elf_func_symbols(const char* filename) {
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "Failed to open file: %s\n", filename);
+        return NULL;
+    }
+
+    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (elf == NULL) {
+        fprintf(stderr, "Failed to initialize ELF: %s\n", elf_errmsg(-1));
+        close(fd);
+        return NULL;
+    }
+
+    struct hash_table* table = NULL;
+
+    // 遍历节头，找到符号表
+    size_t shstrndx;
+    if (elf_getshdrstrndx(elf, &shstrndx) != 0) {
+        fprintf(stderr, "Failed to get section header string index: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        close(fd);
+        return NULL;
+    }
+
+    Elf_Scn *scn = NULL;
+    while ((scn = elf_nextscn(elf, scn)) != NULL) {
+        GElf_Shdr shdr;
+        if (gelf_getshdr(scn, &shdr) != &shdr) {
+            fprintf(stderr, "Failed to get section header: %s\n", elf_errmsg(-1));
+            continue;
+        }
+
+        // 处理符号表节
+        if (shdr.sh_type == SHT_SYMTAB || shdr.sh_type == SHT_DYNSYM) {
+            table = process_symbol_table(elf, &shdr);
+            if (!table) {
+                fprintf(stderr, "Failed to process symbol table\n");
+            }
+            break; // 只处理第一个找到的符号表
+        }
+    }
+
+    elf_end(elf);
+    close(fd);
+    return table;
+}
+
+// 打印哈希表中的符号信息
+void print_elf_symbols(struct hash_table* table) {
+    for (int i = 0; i < HASHTABLE_SIZE; i++) {
+        struct elf_symbol* symbol = table->nodes[i];
+        while (symbol) {
+            printf("Function: %s, Address: 0x%lx, Size: %lu\n", symbol->name, symbol->address, symbol->size);
+            symbol = symbol->next;
+        }
+    }
+}
+
+// 主函数
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <elf-file>\n", argv[0]);
@@ -161,44 +292,21 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    // 读取 ELF 文件信息
-    struct elf_info elf_info;
-    read_elf_file(argv[1], &elf_info);
-
-    // 打印 ELF 文件头、程序头和节头
-    print_elf_header(&elf_info.header);
-    print_program_headers(elf_info.phdrs, elf_info.header.e_phnum);
-    print_section_headers(elf_info.shdrs, elf_info.header.e_shnum);
-
-    // 打开 ELF 文件以进行符号表处理
-    Elf *elf = elf_begin(open(argv[1], O_RDONLY), ELF_C_READ, NULL);
-    if (elf == NULL) {
-        fprintf(stderr, "Failed to initialize ELF: %s\n", elf_errmsg(-1));
-        free_elf_info(&elf_info);
+    // 获取 ELF 符号信息
+    struct hash_table* symbols = get_elf_func_symbols(argv[1]);
+    if (!symbols) {
+        fprintf(stderr, "Failed to get symbols from ELF file.\n");
         exit(EXIT_FAILURE);
     }
 
-    // 打印符号表
-    print_symbol_table(elf, elf_info.shdrs, elf_info.header.e_shnum);
+    // 打印符号信息
+    print_elf_symbols(symbols);
 
-    // 查找符号名称
-    uint64_t address;
-    printf("Enter an address to find the corresponding symbol (in hexadecimal, e.g., 0x400000): ");
-    if (scanf("%lx", &address) == 1) {
-        const char *symbol_name = get_symbol_name_by_address(elf, &elf_info, address);
-        if (symbol_name) {
-            printf("Symbol at address 0x%lx: %s\n", address, symbol_name);
-        } else {
-            printf("No symbol found at address 0x%lx.\n", address);
-        }
-    } else {
-        fprintf(stderr, "Invalid address input.\n");
+    // 释放符号哈希表内存
+    for (int i = 0; i < HASHTABLE_SIZE; i++) {
+        free_elf_symbols(symbols->nodes[i]);
     }
-
-    // 释放资源
-    elf_end(elf);
-    free_elf_info(&elf_info);
+    free(symbols);
 
     return 0;
 }
-

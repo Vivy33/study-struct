@@ -9,6 +9,8 @@
 #define WRITE 0x2
 #define EXECUTE 0x4
 
+#define HASHTABLE_SIZE 256
+
 struct vma {
     uint64_t start;
     uint64_t end;
@@ -16,6 +18,12 @@ struct vma {
     uint64_t offset;
     char* name;
     int valid;
+};
+
+struct vma_node {
+    struct vma vmas[16];
+    int count;  // 当前节点中存储的 VMA 数目
+    struct vma_node* next;
 };
 
 struct process {
@@ -27,11 +35,19 @@ struct process {
     struct vma* vmas;
     int num_vmas;
     int valid;
+    struct vma_node* vma_list;  // 链表头指针
+};
+
+struct process_node {
+    struct process procs[16];
+    int count;  // 当前节点中存储的进程数目
+    struct process_node* next;
 };
 
 struct system_info {
     struct process* procs;
     int num_procs;
+    struct system_info* head;
 };
 
 struct elf_info {
@@ -53,6 +69,11 @@ struct elf_symbol {
     char* elf_name;
     int symbol_count;
     struct symbol* syms;
+};
+
+// 定义哈希表结构体
+struct hash_table {
+    struct elf_symbol* nodes[HASHTABLE_SIZE]; // 哈希槽
 };
 
 unsigned int parse_process_maps(struct process* proc);
