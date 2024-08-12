@@ -1,0 +1,2 @@
+#!/bin/bash
+gcc -Wall -Werror -fsantizer=address -lasan elf.c -o elf -DTESTELF || echo fail

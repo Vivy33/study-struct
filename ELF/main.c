@@ -9,11 +9,14 @@ unsigned int hash(int pid) {
     return pid % HASHTABLE_SIZE;
 }
 
+// process不需要范围查找 用hash
+// 无序数据不可以用二分查找, 哈希是无序数据
 // 查找进程，如果未找到返回 NULL
-struct process* find_process(struct hash_table* table, int pid) {
+struct process* find_process(struct process_hash_table* table, int pid) {
     unsigned int index = hash(pid);
     struct process_node* node = table->nodes[index];
-    //二分
+    // TODO 修改为哈希查找
+    /*
     while (node) {
         int low = 0, high = node->count - 1;
         while (low <= high) {
@@ -28,12 +31,13 @@ struct process* find_process(struct hash_table* table, int pid) {
         }
         node = node->next;
     }
+    */
     return NULL;
 }
 
 // 查找进程，如果未找到则创建新进程
-struct process* find_new_process(struct hash_table* table, int pid) {
-    struct process* proc = find_process(table, pid);
+struct process* find_new_process(struct process_hash_table* process_table, int pid) {
+    struct process* proc = find_process(process_table, pid);
     if (proc) {
         return proc;
     }
@@ -50,15 +54,14 @@ struct process* find_new_process(struct hash_table* table, int pid) {
 
     // 创建新的 process_node
     struct process_node* new_node = malloc(sizeof(struct process_node));
-    new_node->procs[0] = new_proc;
-    new_node->count = 1;
+    new_node->procs = new_proc;
     new_node->next = NULL;
 
     unsigned int index = hash(pid);
-    struct process_node* current_node = table->nodes[index];
+    struct process_node* current_node = process_table->nodes[index];
 
     if (!current_node) {
-        table->nodes[index] = new_node;
+        process_table->nodes[index] = new_node;
     } else {
         while (current_node->next) {
             current_node = current_node->next;
@@ -66,7 +69,7 @@ struct process* find_new_process(struct hash_table* table, int pid) {
         current_node->next = new_node;
     }
 
-    return &new_node->procs[0];
+    return &new_node->procs;
 }
 
 
@@ -143,7 +146,7 @@ int main(int argc, char* argv[]) {
     struct system_info system_info = {0};
 
     // 查找或创建进程
-    struct process* proc = find_new_process(&system_info, pid);
+    struct process* proc = find_new_process(system_info.procs, pid);
     if (!proc) {
         fprintf(stderr, "无法创建或查找 PID 为 %d 的进程\n", pid);
         return 1;
@@ -180,7 +183,7 @@ int main(int argc, char* argv[]) {
     // 释放内存
     free(elf_sym->syms);
     free(elf_sym);
-    free_process_list(system_info.head);
+    free_process_list(system_info);
 
     return 0;
 }

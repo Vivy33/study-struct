@@ -166,7 +166,9 @@ void free_elf_info(struct elf_info *elf_info) {
     free(elf_info->shstrtab);
 }
 
-// 处理符号表节的逻辑，返回哈希表
+// 处理符号表节的逻辑
+// TODO
+// addr 用二分，参考 vma 查找
 struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
     Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
     if (!data) {
@@ -203,7 +205,8 @@ struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
                 free(table);
                 return NULL;
             }
-
+    // TODO
+    // st_value 需要减掉 segement 起始地址，并加上其 offset 
             new_sym->name = strdup(name);
             new_sym->address = sym.st_value;
             new_sym->size = sym.st_size;
@@ -220,6 +223,8 @@ struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
 }
 
 // 获取 ELF 文件的符号信息
+// TODO
+// HASH 替换成 struct elf_symbols
 struct hash_table* get_elf_func_symbols(const char* filename) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
@@ -254,6 +259,11 @@ struct hash_table* get_elf_func_symbols(const char* filename) {
         }
 
         // 处理符号表节
+        // .dynsym 是 .symtab 的子集，.dynsym 用来提供导出给其他 elf 使用的符号名
+        // 在没有调试符号表的情况下，.symtab 不存在
+        // 所以如果 .symtab 存在，就不需要读 .dynsym 
+        // 不存在，就需要读 
+        // TODO
         if (shdr.sh_type == SHT_SYMTAB || shdr.sh_type == SHT_DYNSYM) {
             table = process_symbol_table(elf, &shdr);
             if (!table) {
@@ -268,18 +278,11 @@ struct hash_table* get_elf_func_symbols(const char* filename) {
     return table;
 }
 
-// 打印哈希表中的符号信息
-void print_elf_symbols(struct hash_table* table) {
-    for (int i = 0; i < HASHTABLE_SIZE; i++) {
-        struct elf_symbol* symbol = table->nodes[i];
-        while (symbol) {
-            printf("Function: %s, Address: 0x%lx, Size: %lu\n", symbol->name, symbol->address, symbol->size);
-            symbol = symbol->next;
-        }
-    }
-}
+// TODO
+// 只留 main.c 里的 main 函数
+// gtest
+#ifdef TESTELF
 
-// 主函数
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <elf-file>\n", argv[0]);
@@ -293,6 +296,7 @@ int main(int argc, char **argv) {
     }
 
     // 获取 ELF 符号信息
+// TODO
     struct hash_table* symbols = get_elf_func_symbols(argv[1]);
     if (!symbols) {
         fprintf(stderr, "Failed to get symbols from ELF file.\n");
@@ -303,6 +307,7 @@ int main(int argc, char **argv) {
     print_elf_symbols(symbols);
 
     // 释放符号哈希表内存
+// TODO
     for (int i = 0; i < HASHTABLE_SIZE; i++) {
         free_elf_symbols(symbols->nodes[i]);
     }
@@ -310,3 +315,5 @@ int main(int argc, char **argv) {
 
     return 0;
 }
+
+#endif

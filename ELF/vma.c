@@ -26,12 +26,43 @@ unsigned int parse_process_maps(struct process* proc) {
     int capacity = INITIAL_VMA_CAPACITY;
     proc->vmas = malloc(capacity * sizeof(struct vma));
     if (!proc->vmas) {
+        // TODO 内存申请失败，不做异常处理，exit/abort 
         perror("Failed to allocate memory for VMAs");
         fclose(file);
         return 1;
     }
 
     while (fgets(line, sizeof(line), file)) {
+        // TODO 逻辑realloc 弃用
+        // 假如文件有1000行，申请释放过多 
+        // 红黑树
+        // 为什么这里不能用哈希，不支持范围查找
+
+        // 比如要查找 7f6953063001
+        // 先获取 第一列 start addr，二分比较第一列，找到 target 属于某两行之间 ，然后取较小的一行，看 target 是否属于之间
+        // 如果不属于，则该 地址 在进程地址空间不合法，属于则找到 （map） k为start_addr , value为vma
+        // 7f6953063000-7f6953064000 r--p 00000000 08:20 6506                       /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+        // 7f6953064000-7f6953065000 r--p 00000000 08:20 6514                       /usr/lib/locale/C.utf8/LC_PAPER
+        /*
+            7f6952e2f000-7f6952e30000 r--p 00000000 08:20 6508                       /usr/lib/locale/C.utf8/LC_MONETARY
+            7f6952e30000-7f6952e37000 r--s 00000000 08:20 24553                      /usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache
+            7f6952e37000-7f6952e3a000 rw-p 00000000 00:00 0 
+            7f6952e3a000-7f6952e62000 r--p 00000000 08:20 24212                      /usr/lib/x86_64-linux-gnu/libc.so.6
+            7f6952e62000-7f6952ff7000 r-xp 00028000 08:20 24212                      /usr/lib/x86_64-linux-gnu/libc.so.6
+            7f6952ff7000-7f695304f000 r--p 001bd000 08:20 24212                      /usr/lib/x86_64-linux-gnu/libc.so.6
+            7f695304f000-7f6953050000 ---p 00215000 08:20 24212                      /usr/lib/x86_64-linux-gnu/libc.so.6
+            7f6953050000-7f6953054000 r--p 00215000 08:20 24212                      /usr/lib/x86_64-linux-gnu/libc.so.6
+            7f6953054000-7f6953056000 rw-p 00219000 08:20 24212                      /usr/lib/x86_64-linux-gnu/libc.so.6
+            7f6953056000-7f6953063000 rw-p 00000000 00:00 0 
+        7f6953063000-7f6953064000 r--p 00000000 08:20 6506                       /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+        7f6953064000-7f6953065000 r--p 00000000 08:20 6514                       /usr/lib/locale/C.utf8/LC_PAPER
+            7f6953065000-7f6953066000 r--p 00000000 08:20 6510                       /usr/lib/locale/C.utf8/LC_NAME
+            7f6953066000-7f6953067000 r--p 00000000 08:20 6496                       /usr/lib/locale/C.utf8/LC_ADDRESS
+            7f6953067000-7f6953068000 r--p 00000000 08:20 6516                       /usr/lib/locale/C.utf8/LC_TELEPHONE
+            7f6953068000-7f6953069000 r--p 00000000 08:20 6504                       /usr/lib/locale/C.utf8/LC_MEASUREMENT
+            7f6953069000-7f695306b000 rw-p 00000000 00:00 0 
+        */
+
         if (proc->num_vmas >= capacity) {
             // 如果空间不够，增加容量
             capacity *= 2;
@@ -68,33 +99,12 @@ unsigned int parse_process_maps(struct process* proc) {
         vma.name = strdup(name);
         vma.valid = 1;
 
+        // TODO 添加到 vma-map
         proc->vmas[proc->num_vmas++] = vma;
     }
 
     fclose(file);
     return 0;
-}
-
-// 获取进程的VMA信息
-int get_process_vma_info(struct system_info* system_info, int pid, uint64_t addr, struct vma* out_vma) {
-    struct process* proc = NULL;
-    for (int i = 0; i < system_info->num_procs; i++) {
-        if (system_info->procs[i].pid == pid) {
-            proc = &system_info->procs[i];
-            break;
-        }
-    }
-
-    if (!proc) return 1;
-
-    for (int i = 0; i < proc->num_vmas; i++) {
-        if (addr >= proc->vmas[i].start && addr < proc->vmas[i].end) {
-            *out_vma = proc->vmas[i];
-            return 0;
-        }
-    }
-
-    return 1;
 }
 
 // 打印VMA信息
