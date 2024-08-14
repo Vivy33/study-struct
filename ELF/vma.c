@@ -21,19 +21,11 @@ unsigned int parse_process_maps(struct process* proc) {
 
     char line[256];
     unsigned int flags = 0;
-    
-    // 初始分配内存空间
-    int capacity = INITIAL_VMA_CAPACITY;
-    proc->vmas = malloc(capacity * sizeof(struct vma));
-    if (!proc->vmas) {
-        // TODO 内存申请失败，不做异常处理，exit/abort 
-        perror("Failed to allocate memory for VMAs");
-        fclose(file);
-        return 1;
-    }
+    proc->vma_tree = RB_ROOT; // 初始化红黑树
 
     while (fgets(line, sizeof(line), file)) {
-        // TODO 逻辑realloc 弃用
+        // TODO 
+        // 逻辑realloc 弃用
         // 假如文件有1000行，申请释放过多 
         // 红黑树
         // 为什么这里不能用哈希，不支持范围查找
@@ -63,27 +55,17 @@ unsigned int parse_process_maps(struct process* proc) {
             7f6953069000-7f695306b000 rw-p 00000000 00:00 0 
         */
 
-        if (proc->num_vmas >= capacity) {
-            // 如果空间不够，增加容量
-            capacity *= 2;
-            struct vma* new_vmas = malloc(capacity * sizeof(struct vma));
-            if (!new_vmas) {
-                perror("Failed to allocate memory for VMAs");
-                free(proc->vmas);
-                fclose(file);
-                return 1;
-            }
-            memcpy(new_vmas, proc->vmas, proc->num_vmas * sizeof(struct vma));
-            free(proc->vmas);
-            proc->vmas = new_vmas;
+        struct vma* vma = malloc(sizeof(struct vma));
+        if (!vma) {
+            perror("Failed to allocate memory for VMA");
+            fclose(file);
+            return 1;
         }
-
-        struct vma vma;
         char perm[5] = {0};
         char name[256] = {0};
 
         sscanf(line, "%lx-%lx %4s %lx %*s %*d %255s",
-               &vma.start, &vma.end, perm, &vma.offset, name);
+               &vma->start, &vma->end, perm, &vma->offset, name);
 
         if (strchr(perm, 'r')) {
             flags |= READ;
@@ -95,12 +77,25 @@ unsigned int parse_process_maps(struct process* proc) {
             flags |= EXECUTE;
         }
 
-        vma.flags = flags;
-        vma.name = strdup(name);
-        vma.valid = 1;
+        vma->flags = flags;
+        vma->name = strdup(name);
 
-        // TODO 添加到 vma-map
-        proc->vmas[proc->num_vmas++] = vma;
+        // 将VMA插入红黑树中
+        struct rb_node **new = &(proc->vma_tree.rb_node), *parent = NULL;
+        while (*new) {
+            struct vma *this = rb_entry(*new, struct vma, vma_node);
+
+            parent = *new;
+            if (vma->start < this->start)
+                new = &((*new)->rb_left);
+            else
+                new = &((*new)->rb_right);
+        }
+
+        // 添加红黑树节点
+        rb_link_node(&vma->vma_node, parent, new);
+        rb_insert_color(&vma->vma_node, &proc->vma_tree);
+        proc->num_vmas++;
     }
 
     fclose(file);
