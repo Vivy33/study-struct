@@ -5,6 +5,8 @@
 #include <libelf.h>
 #include <gelf.h>
 
+#include "rbtree.h"
+
 #define READ 0x1
 #define WRITE 0x2
 #define EXECUTE 0x4
@@ -19,6 +21,8 @@ struct vma {
     unsigned int flags;
     uint64_t offset;
     char* name;
+    uint64_t file_hash; // 由文件路径生成的哈希值，例如BuildID[sha1]
+    struct rb_node vma_node; // 红黑树节点，用于VMA红黑树
     // TODO
     // 还需要从文件路径生成一个 hash
     // file /bin/ls
@@ -27,8 +31,6 @@ struct vma {
 };
 
 struct vma_nodes {
-    // TODO
-    // 需要一个 红黑树 做 map
     struct vma vmas[16];
     int count;  // 当前节点中存储的 VMA 数目
     struct vma_nodes* next;
@@ -41,9 +43,7 @@ struct process {
     char* exe_path;
     uint64_t start_time;
     int num_vmas;
-    struct vma_nodes* vmas;
-    // TODO
-    // 红黑树
+    struct rb_root vma_tree; // 红黑树的根，用于管理VMAs
 };
 
 // 描述哈希冲突的情况
@@ -65,18 +65,25 @@ struct symbol {
     char* name;
 };
 
-// 定义 ELF 符号结构
-// TODO 
-// struct symbol 改成map 跟vma同理，k为staraddr value为symbol
+struct elf_symbol {
+    char* name;
+    uint64_t address;
+    uint64_t size;
+    struct rb_node symbol_node; // 红黑树节点, 用于符号红黑树
+};
+
+// 符号哈希表结构体
 struct elf_symbols {
     int symbol_count;
     struct symbol* syms;
+    struct rb_root symbol_tree; // 用于管理符号的红黑树
 };
 
+// 定义 ELF 符号结构
 struct elf {
     char* filename;
     char* elf_id;
-    struct elf_symbols* elf_symbols;
+    struct rb_root_cached symbol_tree; // 红黑树的根，用于管理符号，带左最节点缓存
 };
 
 struct elf_node {

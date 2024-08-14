@@ -38,6 +38,8 @@ struct rb_root {
  * Furthermore, users that want to cache both pointers may
  * find it a bit asymmetric, but that's ok.
  */
+
+// 红黑树根结构（带左最节点缓存）
 struct rb_root_cached {
 	struct rb_root rb_root;
 	struct rb_node *rb_leftmost;

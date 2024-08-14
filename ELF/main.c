@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "process_info.h"
+#include "rbtree.h"
 
 // 哈希函数
 unsigned int hash(int pid) {
@@ -15,25 +16,16 @@ unsigned int hash(int pid) {
 struct process* find_process(struct process_hash_table* table, int pid) {
     unsigned int index = hash(pid);
     struct process_node* node = table->nodes[index];
-    // TODO 修改为哈希查找
-    /*
+    
     while (node) {
-        int low = 0, high = node->count - 1;
-        while (low <= high) {
-            int mid = (low + high) / 2;
-            if (node->procs[mid].pid == pid) {
-                return &node->procs[mid];
-            } else if (node->procs[mid].pid < pid) {
-                low = mid + 1;
-            } else {
-                high = mid - 1;
-            }
+        if (node->procs.pid == pid) {
+            return &node->procs;
         }
         node = node->next;
     }
-    */
     return NULL;
 }
+
 
 // 查找进程，如果未找到则创建新进程
 struct process* find_new_process(struct process_hash_table* process_table, int pid) {
@@ -72,24 +64,59 @@ struct process* find_new_process(struct process_hash_table* process_table, int p
     return &new_node->procs;
 }
 
+// 查找 ELF 文件，如果未找到则创建新的 ELF 结构
+struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const char* filename) {
+    unsigned int index = hash(file_hash);
+    struct elf_node* node = elf_table->nodes[index];
+
+    while (node) {
+        if (strcmp(node->elf.elf_id, filename) == 0) {
+            return &node->elf;
+        }
+        node = node->next;
+    }
+
+    // 如果未找到，创建新的 ELF 结构
+    struct elf new_elf = {0};
+    new_elf.filename = strdup(filename);
+    new_elf.elf_id = strdup(filename); // 暂时用文件名代替，真实场景中应使用 file_hash
+    // 解析 ELF 符号表
+    if (parse_elf_symbols(&new_elf)) {
+        fprintf(stderr, "Failed to parse ELF symbols for %s\n", filename);
+        return NULL;
+    }
+
+    // 创建新的 elf_node
+    struct elf_node* new_node = malloc(sizeof(struct elf_node));
+    new_node->elf = new_elf;
+    new_node->next = NULL;
+
+    if (!elf_table->nodes[index]) {
+        elf_table->nodes[index] = new_node;
+    } else {
+        struct elf_node* current_node = elf_table->nodes[index];
+        while (current_node->next) {
+            current_node = current_node->next;
+        }
+        current_node->next = new_node;
+    }
+
+    return &new_node->elf;
+}
 
 // 从进程中查找 VMA 信息
 struct vma* find_vma_from_process(struct process* proc, uint64_t real_addr) {
-    struct vma_node* node = proc->vma_list;
+    struct rb_node* node = proc->vma_tree.rb_node;
+
     while (node) {
-        // 使用二分查找
-        int low = 0, high = node->count - 1;
-        while (low <= high) {
-            int mid = (low + high) / 2;
-            if (real_addr >= node->vmas[mid].start && real_addr < node->vmas[mid].end) {
-                return &node->vmas[mid];
-            } else if (real_addr < node->vmas[mid].start) {
-                high = mid - 1;
-            } else {
-                low = mid + 1;
-            }
-        }
-        node = node->next;
+        struct vma* vma_info = rb_entry(node, struct vma, vma_node);
+
+        if (real_addr < vma_info->start)
+            node = node->rb_left;
+        else if (real_addr >= vma_info->end)
+            node = node->rb_right;
+        else
+            return vma_info;
     }
     return NULL;
 }
@@ -108,7 +135,7 @@ uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
 }
 
 // 根据相对地址查找符号名称
-char* find_symbol_name_from_elf(struct elf_symbol* syms, const uint64_t relative_address) {
+char* find_symbol_name_from_elf(struct elf_symbols* syms, const uint64_t relative_address) {
     int left = 0;
     int right = syms->symbol_count - 1;
 
@@ -125,7 +152,6 @@ char* find_symbol_name_from_elf(struct elf_symbol* syms, const uint64_t relative
 
     return NULL;
 }
-
 
 // 打印使用说明
 void print_usage(const char* progname) {
@@ -165,15 +191,16 @@ int main(int argc, char* argv[]) {
     uint64_t relative_address = get_relative_address(real_addr, vma_info);
     printf("ELF 中的相对地址: 0x%lx\n", relative_address);
 
-    // 获取 ELF 符号
-    struct elf_symbol* elf_sym = get_elf_func_symbols(vma_info->name);
-    if (!elf_sym) {
-        fprintf(stderr, "无法从 %s 获取 ELF 符号\n", vma_info->name);
+    // 查找或创建 ELF 文件
+    struct elf* elf_file = find_elf(system_info.elfs, vma_info->file_hash, vma_info->name);
+    if (!elf_file) {
+        fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", vma_info->name);
         return 1;
     }
 
     // 查找符号名称
-    const char* symbol_name = find_symbol_name_from_elf(elf_sym, relative_address);
+    struct elf_symbols* elf_syms = (struct elf_symbols*)&elf_file->symbol_tree;
+    const char* symbol_name = find_symbol_name_from_elf(elf_syms, relative_address);
     if (symbol_name) {
         printf("函数名称: %s\n", symbol_name);
     } else {
@@ -181,9 +208,8 @@ int main(int argc, char* argv[]) {
     }
 
     // 释放内存
-    free(elf_sym->syms);
-    free(elf_sym);
-    free_process_list(system_info);
+    free_process_list(system_info.procs);
+    free_elf_list(system_info.elfs);
 
     return 0;
 }

@@ -7,20 +7,13 @@
 #include <string.h>
 
 #include "process_info.h"
-
-struct elf_symbol {
-    char* name;
-    uint64_t address;
-    uint64_t size;
-    struct elf_symbol* next;
-};
+#include "rbtree.h"
 
 // 哈希函数
-unsigned int hash(const char* name) {
-    unsigned int hash = 5381;
-    int c;
-    while ((c = *name++)) {
-        hash = ((hash << 5) + hash) + c; // hash * 33 + c
+unsigned int hash(const char *str) {
+    unsigned int hash = 0;
+    while (*str) {
+        hash = (hash << 5) - hash + *str++;
     }
     return hash % HASHTABLE_SIZE;
 }
@@ -166,10 +159,18 @@ void free_elf_info(struct elf_info *elf_info) {
     free(elf_info->shstrtab);
 }
 
+// 释放符号节点
+void free_elf_symbols(struct elf_symbol* symbol) {
+    if (symbol) {
+        free(symbol->name);
+        free(symbol);
+    }
+}
+
 // 处理符号表节的逻辑
 // TODO
 // addr 用二分，参考 vma 查找
-struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
+struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
     Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
     if (!data) {
         fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
@@ -177,12 +178,12 @@ struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
     }
 
     size_t symbol_count = shdr->sh_size / shdr->sh_entsize;
-    struct hash_table* table = malloc(sizeof(struct hash_table));
-    if (!table) {
-        fprintf(stderr, "Memory allocation failed for hash table\n");
+    struct elf_symbols* symbols = malloc(sizeof(struct elf_symbols));
+    if (!symbols) {
+        fprintf(stderr, "Memory allocation failed for symbols\n");
         return NULL;
     }
-    memset(table, 0, sizeof(struct hash_table)); // 初始化哈希表
+    symbols->symbol_tree.rb_node = NULL; // 初始化红黑树根
 
     for (size_t i = 0; i < symbol_count; ++i) {
         GElf_Sym sym;
@@ -201,31 +202,42 @@ struct hash_table* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
             struct elf_symbol* new_sym = malloc(sizeof(struct elf_symbol));
             if (!new_sym) {
                 fprintf(stderr, "Memory allocation failed\n");
-                free_elf_symbols(table->nodes[hash(name)]);
-                free(table);
+                // 这里需要确保释放已经分配的符号
+                // 释放所有符号
+                free_elf_symbols(new_sym);
                 return NULL;
             }
-    // TODO
-    // st_value 需要减掉 segement 起始地址，并加上其 offset 
-            new_sym->name = strdup(name);
-            new_sym->address = sym.st_value;
-            new_sym->size = sym.st_size;
-            new_sym->next = NULL;
 
-            // 插入到哈希表
-            unsigned int index = hash(name);
-            new_sym->next = table->nodes[index]; // 在哈希槽中插入
-            table->nodes[index] = new_sym;
+            new_sym->name = strdup(name);
+            new_sym->address = sym.st_value;  // TODO: st_value 需要减掉 segment 起始地址，并加上其 offset
+            new_sym->size = sym.st_size;
+            new_sym->symbol_node.rb_left = new_sym->symbol_node.rb_right = NULL;
+
+            // 插入到红黑树中
+            struct rb_node **new = &(symbols->symbol_tree.rb_node), *parent = NULL;
+            while (*new) {
+                struct elf_symbol *this = rb_entry(*new, struct elf_symbol, symbol_node);
+
+                parent = *new;
+                if (strcmp(new_sym->name, this->name) < 0)
+                    new = &((*new)->rb_left);
+                else
+                    new = &((*new)->rb_right);
+            }
+
+            // 添加新的节点并保持红黑树性质
+            rb_link_node(&new_sym->symbol_node, parent, new);
+            rb_insert_color(&new_sym->symbol_node, &symbols->symbol_tree);
         }
     }
 
-    return table;
+    return symbols;
 }
 
 // 获取 ELF 文件的符号信息
 // TODO
 // HASH 替换成 struct elf_symbols
-struct hash_table* get_elf_func_symbols(const char* filename) {
+struct elf_symbols* get_elf_func_symbols(const char* filename) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
         fprintf(stderr, "Failed to open file: %s\n", filename);
@@ -239,7 +251,7 @@ struct hash_table* get_elf_func_symbols(const char* filename) {
         return NULL;
     }
 
-    struct hash_table* table = NULL;
+    struct elf_symbols* symbols = NULL;
 
     // 遍历节头，找到符号表
     size_t shstrndx;
@@ -265,8 +277,8 @@ struct hash_table* get_elf_func_symbols(const char* filename) {
         // 不存在，就需要读 
         // TODO
         if (shdr.sh_type == SHT_SYMTAB || shdr.sh_type == SHT_DYNSYM) {
-            table = process_symbol_table(elf, &shdr);
-            if (!table) {
+            symbols = process_symbol_table(elf, &shdr);
+            if (!symbols) {
                 fprintf(stderr, "Failed to process symbol table\n");
             }
             break; // 只处理第一个找到的符号表
@@ -275,13 +287,14 @@ struct hash_table* get_elf_func_symbols(const char* filename) {
 
     elf_end(elf);
     close(fd);
-    return table;
+    return symbols;
 }
 
 // TODO
 // 只留 main.c 里的 main 函数
 // gtest
-#ifdef TESTELF
+
+//#ifdef TESTELF
 
 int main(int argc, char **argv) {
     if (argc != 2) {
@@ -296,8 +309,7 @@ int main(int argc, char **argv) {
     }
 
     // 获取 ELF 符号信息
-// TODO
-    struct hash_table* symbols = get_elf_func_symbols(argv[1]);
+    struct elf_symbols* symbols = get_elf_func_symbols(argv[1]);
     if (!symbols) {
         fprintf(stderr, "Failed to get symbols from ELF file.\n");
         exit(EXIT_FAILURE);
@@ -306,14 +318,16 @@ int main(int argc, char **argv) {
     // 打印符号信息
     print_elf_symbols(symbols);
 
-    // 释放符号哈希表内存
-// TODO
-    for (int i = 0; i < HASHTABLE_SIZE; i++) {
-        free_elf_symbols(symbols->nodes[i]);
+    // 释放符号红黑树内存
+    struct rb_node *node;
+    for (node = rb_first(&symbols->symbol_tree); node; ) {
+        struct elf_symbol *symbol = rb_entry(node, struct elf_symbol, symbol_node);
+        node = rb_next(node);
+        free_elf_symbols(symbol);
     }
     free(symbols);
 
     return 0;
 }
 
-#endif
+//#endif
