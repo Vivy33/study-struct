@@ -167,7 +167,6 @@ void free_elf_symbols(struct elf_symbol* symbol) {
     }
 }
 
-// 处理符号表节的逻辑
 struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_info *elf_info) {
     Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
     if (!data) {
@@ -197,17 +196,20 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
                 continue;
             }
 
-            // 寻找段包含符号节
             uint64_t sym_address = sym.st_value;
             for (int j = 0; j < elf_info->header.e_phnum; ++j) {
                 Elf64_Phdr *phdr = &elf_info->phdrs[j];
                 if (phdr->p_type == PT_LOAD && 
                     sym_address >= phdr->p_vaddr && 
                     sym_address < phdr->p_vaddr + phdr->p_memsz) {
-                    // 修正符号的实际地址
                     sym_address = sym.st_value - phdr->p_vaddr + phdr->p_offset;
                     break;
                 }
+            }
+
+            // 检查红黑树中是否已有相同的符号
+            if (rb_find_node(&symbols->symbol_tree, name)) {
+                continue;
             }
 
             struct elf_symbol* new_sym = malloc(sizeof(struct elf_symbol));
@@ -220,23 +222,9 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
             new_sym->name = strdup(name);
             new_sym->address = sym_address;
             new_sym->size = sym.st_size;
-            new_sym->symbol_node.rb_left = new_sym->symbol_node.rb_right = NULL;
 
             // 插入到红黑树中
-            struct rb_node **new = &(symbols->symbol_tree.rb_node), *parent = NULL;
-            while (*new) {
-                struct elf_symbol *this = rb_entry(*new, struct elf_symbol, symbol_node);
-
-                parent = *new;
-                if (strcmp(new_sym->name, this->name) < 0)
-                    new = &((*new)->rb_left);
-                else
-                    new = &((*new)->rb_right);
-            }
-
-            // 添加新的节点并保持红黑树性质
-            rb_link_node(&new_sym->symbol_node, parent, new);
-            rb_insert_color(&new_sym->symbol_node, &symbols->symbol_tree);
+            rb_insert_symbol(&symbols->symbol_tree, new_sym);
         }
     }
 
