@@ -26,7 +26,6 @@ struct process* find_process(struct process_hash_table* table, int pid) {
     return NULL;
 }
 
-
 // 查找进程，如果未找到则创建新进程
 struct process* find_new_process(struct process_hash_table* process_table, int pid) {
     struct process* proc = find_process(process_table, pid);
@@ -64,7 +63,7 @@ struct process* find_new_process(struct process_hash_table* process_table, int p
     return &new_node->procs;
 }
 
-// 查找 ELF 文件，如果未找到则创建新的 ELF 结构
+// 查找 ELF 文件，如果未找到返回 NULL
 struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const char* filename) {
     unsigned int index = hash(file_hash);
     struct elf_node* node = elf_table->nodes[index];
@@ -77,7 +76,11 @@ struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const
         node = node->next;
     }
 
-    // 如果未找到，创建新的 ELF 结构
+    return NULL; // 未找到
+}
+
+// 创建新的 ELF 结构并插入到哈希表中
+struct elf* create_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const char* filename) {
     struct elf new_elf = {0};
     new_elf.filename = strdup(filename);
     if (!new_elf.filename) {
@@ -106,7 +109,8 @@ struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const
     new_node->elf = new_elf;
     new_node->next = NULL;
 
-    // 将新节点插入到哈希表的链表中
+    // 插入到哈希表中
+    unsigned int index = hash(file_hash);
     if (!elf_table->nodes[index]) {
         elf_table->nodes[index] = new_node;
     } else {
@@ -176,6 +180,53 @@ void print_usage(const char* progname) {
     printf("  pc: Program Counter (address)\n");
 }
 
+// 初始化系统信息
+int initialize_system(struct system_info* system_info) {
+    memset(system_info, 0, sizeof(struct system_info));
+
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        fprintf(stderr, "Error: ELF library initialization failed: %s\n", elf_errmsg(-1));
+        return 1;
+    }
+
+    return 0;
+}
+
+// 解析进程并获取VMA信息
+struct vma* get_process_and_vma(struct system_info* system_info, int pid, uint64_t real_addr) {
+    struct process* proc = find_new_process(system_info->procs, pid);
+    if (!proc) {
+        fprintf(stderr, "无法创建或查找 PID 为 %d 的进程\n", pid);
+        return NULL;
+    }
+
+    struct vma* vma_info = find_vma_from_process(proc, real_addr);
+    if (!vma_info) {
+        fprintf(stderr, "无法获取地址 0x%lx 的 VMA 信息\n", real_addr);
+        return NULL;
+    }
+
+    return vma_info;
+}
+
+// 获取ELF文件及符号信息
+char* get_elf_and_symbol(struct system_info* system_info, struct vma* vma_info, uint64_t relative_address) {
+    struct elf* elf_file = find_elf(system_info->elfs, vma_info->file_hash, vma_info->name);
+    if (!elf_file) {
+        fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", vma_info->name);
+        return NULL;
+    }
+
+    struct elf_symbols* elf_syms = (struct elf_symbols*)&elf_file->symbol_tree;
+    return find_symbol_name_from_elf(elf_syms, relative_address);
+}
+
+// 释放系统资源
+void cleanup_system(struct system_info* system_info) {
+    free_process_list(system_info->procs);
+    free_elf_list(system_info->elfs);
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         print_usage(argv[0]);
@@ -187,81 +238,34 @@ int main(int argc, char* argv[]) {
 
     struct system_info system_info = {0};
 
-    // 查找或创建进程
-    struct process* proc = find_new_process(system_info.procs, pid);
-    if (!proc) {
-        fprintf(stderr, "无法创建或查找 PID 为 %d 的进程\n", pid);
+    // 初始化系统
+    if (initialize_system(&system_info)) {
         return 1;
     }
 
-    // 查找 VMA
-    struct vma* vma_info = find_vma_from_process(proc, real_addr);
+    // 查找进程并获取VMA信息
+    struct vma* vma_info = get_process_and_vma(&system_info, pid, real_addr);
     if (!vma_info) {
-        fprintf(stderr, "无法获取地址 0x%lx 的 VMA 信息\n", real_addr);
+        cleanup_system(&system_info);
         return 1;
     }
 
+    // 打印 VMA 信息
     print_vma_info(vma_info);
 
-    // 计算 ELF 中的相对地址
+    // 查找 ELF 文件及符号名称
     uint64_t relative_address = get_relative_address(real_addr, vma_info);
-    printf("ELF 中的相对地址: 0x%lx\n", relative_address);
+    printf("Relative address in ELF: 0x%lx\n", relative_address);
 
-    // 查找或创建 ELF 文件
-    struct elf* elf_file = find_elf(system_info.elfs, vma_info->file_hash, vma_info->name);
-    if (!elf_file) {
-        fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", vma_info->name);
-        return 1;
-    }
-
-    // 查找符号名称
-    struct elf_symbols* elf_syms = (struct elf_symbols*)&elf_file->symbol_tree;
-    const char* symbol_name = find_symbol_name_from_elf(elf_syms, relative_address);
+    const char* symbol_name = get_elf_and_symbol(&system_info, vma_info, relative_address);
     if (symbol_name) {
-        printf("函数名称: %s\n", symbol_name);
+        printf("Function name: %s\n", symbol_name);
     } else {
-        printf("未找到函数名称\n");
+        printf("No function name found\n");
     }
 
-    // 检查 ELF 文件参数
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <elf-file>\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-
-    // 初始化 libelf
-    if (elf_version(EV_CURRENT) == EV_NONE) {
-        fprintf(stderr, "ELF library initialization failed: %s\n", elf_errmsg(-1));
-        exit(EXIT_FAILURE);
-    }
-    
-    struct elf_info elf_info;  // 定义 elf_info 结构体实例
-    read_elf_file(argv[1], &elf_info);  // 读取 ELF 文件并初始化 elf_info
-
-    // 获取 ELF 符号信息
-    struct elf_symbols* symbols = get_elf_func_symbols(argv[1]);
-    if (!symbols) {
-        fprintf(stderr, "Failed to get symbols from ELF file.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // 打印符号信息
-    print_elf_symbols(symbols);
-
-    // 释放符号红黑树内存
-    struct rb_node *node;
-    for (node = rb_first(&symbols->symbol_tree); node; ) {
-        struct elf_symbol *symbol = rb_entry(node, struct elf_symbol, symbol_node);
-        node = rb_next(node);
-        free_elf_symbols(symbol);
-    }
-
-    // 释放内存
-    free_process_list(system_info.procs);
-    free_elf_list(system_info.elfs);
-    free(symbols);
-    free_elf_info(&elf_info); 
+    // 清理系统资源
+    cleanup_system(&system_info);
 
     return 0;
 }
-
