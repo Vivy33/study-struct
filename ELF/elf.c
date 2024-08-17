@@ -213,7 +213,6 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
             struct elf_symbol* new_sym = malloc(sizeof(struct elf_symbol));
             if (!new_sym) {
                 fprintf(stderr, "Memory allocation failed\n");
-                // 释放所有符号
                 free_elf_symbols(new_sym);
                 return NULL;
             }
@@ -244,6 +243,49 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
     return symbols;
 }
 
+void merge_symbol_trees(struct rb_root *dst, struct rb_root *src) {
+    struct rb_node *node = rb_first(src);
+    while (node) {
+        struct elf_symbol *src_sym = rb_entry(node, struct elf_symbol, symbol_node);
+        node = rb_next(node);
+
+        struct rb_node **new = &(dst->rb_node), *parent = NULL;
+        int duplicate = 0;
+        while (*new) {
+            struct elf_symbol *this = rb_entry(*new, struct elf_symbol, symbol_node);
+
+            parent = *new;
+            int cmp = strcmp(src_sym->name, this->name);
+            if (cmp < 0)
+                new = &((*new)->rb_left);
+            else if (cmp > 0)
+                new = &((*new)->rb_right);
+            else {
+                // 如果符号重名，处理重名符号的情况
+                // 这里选择直接跳过重名符号，可以根据实际需求自定义逻辑
+                duplicate = 1;
+                break;
+            }
+        }
+
+        if (!duplicate) {
+            struct elf_symbol *new_sym = malloc(sizeof(struct elf_symbol));
+            if (!new_sym) {
+                fprintf(stderr, "Memory allocation failed during merging symbols\n");
+                continue;
+            }
+
+            new_sym->name = strdup(src_sym->name);
+            new_sym->address = src_sym->address;
+            new_sym->size = src_sym->size;
+            new_sym->symbol_node.rb_left = new_sym->symbol_node.rb_right = NULL;
+
+            rb_link_node(&new_sym->symbol_node, parent, new);
+            rb_insert_color(&new_sym->symbol_node, dst);
+        }
+    }
+}
+
 struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *elf_info) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
@@ -259,8 +301,8 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     }
 
     struct elf_symbols* symbols = NULL;
+    struct elf_symbols* final_symbols = NULL;
 
-    // 遍历节头，找到符号表
     size_t shstrndx;
     if (elf_getshdrstrndx(elf, &shstrndx) != 0) {
         fprintf(stderr, "Failed to get section header string index: %s\n", elf_errmsg(-1));
@@ -270,6 +312,8 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     }
 
     Elf_Scn *scn = NULL;
+    int found_symtab = 0;
+
     while ((scn = elf_nextscn(elf, scn)) != NULL) {
         GElf_Shdr shdr;
         if (gelf_getshdr(scn, &shdr) != &shdr) {
@@ -277,19 +321,48 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
             continue;
         }
 
-        // 处理符号表节
-        if (shdr.sh_type == SHT_SYMTAB || shdr.sh_type == SHT_DYNSYM) {
-            symbols = process_symbol_table(elf, &shdr, elf_info);  // 传递 elf_info 参数
+        if (shdr.sh_type == SHT_SYMTAB) {
+            symbols = process_symbol_table(elf, &shdr, elf_info);
             if (!symbols) {
-                fprintf(stderr, "Failed to process symbol table\n");
+                fprintf(stderr, "Failed to process .symtab\n");
+            } else {
+                final_symbols = symbols;
             }
-            break; // 只处理第一个找到的符号表
+            found_symtab = 1;
+            break;
+        }
+    }
+
+    if (!found_symtab) {
+        scn = NULL;
+    }
+
+    while ((scn = elf_nextscn(elf, scn)) != NULL) {
+        GElf_Shdr shdr;
+        if (gelf_getshdr(scn, &shdr) != &shdr) {
+            fprintf(stderr, "Failed to get section header: %s\n", elf_errmsg(-1));
+            continue;
+        }
+
+        if (shdr.sh_type == SHT_DYNSYM) {
+            symbols = process_symbol_table(elf, &shdr, elf_info);
+            if (!symbols) {
+                fprintf(stderr, "Failed to process .dynsym\n");
+            } else {
+                if (final_symbols) {
+                    // 将 .dynsym 中的符号合并到 final_symbols 中
+                    merge_symbol_trees(&final_symbols->symbol_tree, &symbols->symbol_tree);
+                    free_elf_symbols(symbols); // 释放 symbols 结构的内存
+                } else {
+                    final_symbols = symbols;
+                }
+            }
         }
     }
 
     elf_end(elf);
     close(fd);
-    return symbols;
+    return final_symbols;
 }
 
 // #ifdef TESTELF

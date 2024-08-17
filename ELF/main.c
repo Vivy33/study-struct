@@ -69,8 +69,9 @@ struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const
     unsigned int index = hash(file_hash);
     struct elf_node* node = elf_table->nodes[index];
 
+    // 遍历链表查找匹配的 ELF 文件
     while (node) {
-        if (strcmp(node->elf.elf_id, filename) == 0) {
+        if (node->elf.file_hash == file_hash && strcmp(node->elf.filename, filename) == 0) {
             return &node->elf;
         }
         node = node->next;
@@ -79,18 +80,33 @@ struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const
     // 如果未找到，创建新的 ELF 结构
     struct elf new_elf = {0};
     new_elf.filename = strdup(filename);
-    new_elf.elf_id = strdup(filename); // 暂时用文件名代替，真实场景中应使用 file_hash
+    if (!new_elf.filename) {
+        fprintf(stderr, "Failed to allocate memory for filename\n");
+        return NULL;
+    }
+
+    new_elf.file_hash = file_hash;
+    new_elf.elf_id = file_hash; // 真实场景中应使用 file_hash
+
     // 解析 ELF 符号表
     if (parse_elf_symbols(&new_elf)) {
         fprintf(stderr, "Failed to parse ELF symbols for %s\n", filename);
+        free(new_elf.filename);
         return NULL;
     }
 
     // 创建新的 elf_node
     struct elf_node* new_node = malloc(sizeof(struct elf_node));
+    if (!new_node) {
+        fprintf(stderr, "Failed to allocate memory for elf_node\n");
+        free(new_elf.filename);
+        return NULL;
+    }
+
     new_node->elf = new_elf;
     new_node->next = NULL;
 
+    // 将新节点插入到哈希表的链表中
     if (!elf_table->nodes[index]) {
         elf_table->nodes[index] = new_node;
     } else {
@@ -207,7 +223,8 @@ int main(int argc, char* argv[]) {
         printf("未找到函数名称\n");
     }
 
-        if (argc != 2) {
+    // 检查 ELF 文件参数
+    if (argc != 2) {
         fprintf(stderr, "Usage: %s <elf-file>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
@@ -247,3 +264,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+

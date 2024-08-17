@@ -76,6 +76,7 @@ struct elf_symbols {
 
 // 定义 ELF 符号结构
 struct elf {
+    uint64_t file_hash;
     char* filename;
     char* elf_id;
     struct rb_root_cached symbol_tree; // 红黑树的根，用于管理符号，带左最节点缓存
