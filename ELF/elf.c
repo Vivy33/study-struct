@@ -168,9 +168,7 @@ void free_elf_symbols(struct elf_symbol* symbol) {
 }
 
 // 处理符号表节的逻辑
-// TODO
-// addr 用二分，参考 vma 查找
-struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
+struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_info *elf_info) {
     Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
     if (!data) {
         fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
@@ -199,17 +197,29 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
                 continue;
             }
 
+            // 寻找段包含符号节
+            uint64_t sym_address = sym.st_value;
+            for (int j = 0; j < elf_info->header.e_phnum; ++j) {
+                Elf64_Phdr *phdr = &elf_info->phdrs[j];
+                if (phdr->p_type == PT_LOAD && 
+                    sym_address >= phdr->p_vaddr && 
+                    sym_address < phdr->p_vaddr + phdr->p_memsz) {
+                    // 修正符号的实际地址
+                    sym_address = sym.st_value - phdr->p_vaddr + phdr->p_offset;
+                    break;
+                }
+            }
+
             struct elf_symbol* new_sym = malloc(sizeof(struct elf_symbol));
             if (!new_sym) {
                 fprintf(stderr, "Memory allocation failed\n");
-                // 这里需要确保释放已经分配的符号
                 // 释放所有符号
                 free_elf_symbols(new_sym);
                 return NULL;
             }
 
             new_sym->name = strdup(name);
-            new_sym->address = sym.st_value;  // TODO: st_value 需要减掉 segment 起始地址，并加上其 offset
+            new_sym->address = sym_address;
             new_sym->size = sym.st_size;
             new_sym->symbol_node.rb_left = new_sym->symbol_node.rb_right = NULL;
 
@@ -234,10 +244,7 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr) {
     return symbols;
 }
 
-// 获取 ELF 文件的符号信息
-// TODO
-// HASH 替换成 struct elf_symbols
-struct elf_symbols* get_elf_func_symbols(const char* filename) {
+struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *elf_info) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
         fprintf(stderr, "Failed to open file: %s\n", filename);
@@ -271,13 +278,8 @@ struct elf_symbols* get_elf_func_symbols(const char* filename) {
         }
 
         // 处理符号表节
-        // .dynsym 是 .symtab 的子集，.dynsym 用来提供导出给其他 elf 使用的符号名
-        // 在没有调试符号表的情况下，.symtab 不存在
-        // 所以如果 .symtab 存在，就不需要读 .dynsym 
-        // 不存在，就需要读 
-        // TODO
         if (shdr.sh_type == SHT_SYMTAB || shdr.sh_type == SHT_DYNSYM) {
-            symbols = process_symbol_table(elf, &shdr);
+            symbols = process_symbol_table(elf, &shdr, elf_info);  // 传递 elf_info 参数
             if (!symbols) {
                 fprintf(stderr, "Failed to process symbol table\n");
             }
@@ -290,44 +292,8 @@ struct elf_symbols* get_elf_func_symbols(const char* filename) {
     return symbols;
 }
 
-// TODO
-// 只留 main.c 里的 main 函数
-// gtest
+// #ifdef TESTELF
 
-//#ifdef TESTELF
+// xxxxxx
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <elf-file>\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-
-    // 初始化 libelf
-    if (elf_version(EV_CURRENT) == EV_NONE) {
-        fprintf(stderr, "ELF library initialization failed: %s\n", elf_errmsg(-1));
-        exit(EXIT_FAILURE);
-    }
-
-    // 获取 ELF 符号信息
-    struct elf_symbols* symbols = get_elf_func_symbols(argv[1]);
-    if (!symbols) {
-        fprintf(stderr, "Failed to get symbols from ELF file.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // 打印符号信息
-    print_elf_symbols(symbols);
-
-    // 释放符号红黑树内存
-    struct rb_node *node;
-    for (node = rb_first(&symbols->symbol_tree); node; ) {
-        struct elf_symbol *symbol = rb_entry(node, struct elf_symbol, symbol_node);
-        node = rb_next(node);
-        free_elf_symbols(symbol);
-    }
-    free(symbols);
-
-    return 0;
-}
-
-//#endif
+// #endif

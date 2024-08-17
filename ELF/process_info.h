@@ -23,11 +23,6 @@ struct vma {
     char* name;
     uint64_t file_hash; // 由文件路径生成的哈希值，例如BuildID[sha1]
     struct rb_node vma_node; // 红黑树节点，用于VMA红黑树
-    // TODO
-    // 还需要从文件路径生成一个 hash
-    // file /bin/ls
-    // /bin/ls: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=897f49cafa98c11d63e619e7e40352f855249c13, for GNU/Linux 3.2.0, stripped
-    // BuildID[sha1]=897f4 就是我们要的 hash
 };
 
 struct vma_nodes {
@@ -96,15 +91,6 @@ struct elf_hash_table {
 };
 
 struct system_info {
-    // TODO
-    // 所有的进程 ->
-    // 所有的 ELF 文件
-    // 进程 通过 vma 查到 对应的 elf 文件
-    // 引入一个文件 hash id 作为 elf 的 id
-    // 需要一个 map，k 为 elf_id，v 为 struct elf
-    // 不同的进程可能会共享一个 elf
-    // 先从 vma 中查找 elf 是否解析过 符号表
-    // 所以 elf 里面还要包含 符号表
     struct process_hash_table* procs;
     struct elf_hash_table* elfs;
 };

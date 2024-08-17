@@ -105,7 +105,7 @@ struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const
 }
 
 // 从进程中查找 VMA 信息
-struct vma* find_vma_from_process(struct process* proc, uint64_t real_addr) {
+struct vma* find_vma_from_process(struct process* proc, unsigned long real_addr) {
     struct rb_node* node = proc->vma_tree.rb_node;
 
     while (node) {
@@ -118,7 +118,7 @@ struct vma* find_vma_from_process(struct process* proc, uint64_t real_addr) {
         else
             return vma_info;
     }
-    return NULL;
+    return NULL; // 未找到合法的VMA
 }
 
 // 从 VMA 中获取 ELF 文件名
@@ -207,9 +207,43 @@ int main(int argc, char* argv[]) {
         printf("未找到函数名称\n");
     }
 
+        if (argc != 2) {
+        fprintf(stderr, "Usage: %s <elf-file>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    // 初始化 libelf
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        fprintf(stderr, "ELF library initialization failed: %s\n", elf_errmsg(-1));
+        exit(EXIT_FAILURE);
+    }
+    
+    struct elf_info elf_info;  // 定义 elf_info 结构体实例
+    read_elf_file(argv[1], &elf_info);  // 读取 ELF 文件并初始化 elf_info
+
+    // 获取 ELF 符号信息
+    struct elf_symbols* symbols = get_elf_func_symbols(argv[1]);
+    if (!symbols) {
+        fprintf(stderr, "Failed to get symbols from ELF file.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // 打印符号信息
+    print_elf_symbols(symbols);
+
+    // 释放符号红黑树内存
+    struct rb_node *node;
+    for (node = rb_first(&symbols->symbol_tree); node; ) {
+        struct elf_symbol *symbol = rb_entry(node, struct elf_symbol, symbol_node);
+        node = rb_next(node);
+        free_elf_symbols(symbol);
+    }
+
     // 释放内存
     free_process_list(system_info.procs);
     free_elf_list(system_info.elfs);
+    free(symbols);
+    free_elf_info(&elf_info); 
 
     return 0;
 }
