@@ -13,6 +13,10 @@ typedef struct {
     int size;
 } RingBuffer;
 
+typedef struct {
+    int data_size;
+} DataHeader;
+
 void ringbuffer_init(RingBuffer* rb);
 bool ringbuffer_is_empty(const RingBuffer* rb);
 bool ringbuffer_is_full(const RingBuffer* rb);

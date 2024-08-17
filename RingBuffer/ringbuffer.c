@@ -2,30 +2,32 @@
 #include <string.h>
 #include <stdatomic.h>
 
-void ringbuffer_init(RingBuffer* rb) {
-    atomic_store(&rb->head, 0);
-    atomic_store(&rb->tail, 0);
-    rb->size = RINGBUFFER_SIZE;
-}
-
 bool ringbuffer_is_empty(const RingBuffer* rb) {
     return atomic_load(&rb->head) == atomic_load(&rb->tail);
 }
 
 bool ringbuffer_is_full(const RingBuffer* rb) {
-    return ((atomic_load(&rb->head) + 1) % rb->size) == atomic_load(&rb->tail);
+    return ((atomic_load(&rb->head) + sizeof(DataHeader)) % rb->size) == atomic_load(&rb->tail);
 }
 
 bool ringbuffer_write(RingBuffer* rb, const char* data, int length) {
-    if (length > rb->size - 1 || ringbuffer_is_full(rb)) {
-        return false;
+    int space_available = (rb->size - (atomic_load(&rb->head) - atomic_load(&rb->tail) + rb->size) % rb->size) - sizeof(DataHeader);
+    if (length > space_available) {
+        return false; // Not enough space
     }
+
+    DataHeader hdr = { length };
+
+    int head = atomic_load(&rb->head);
+    memcpy(&rb->buffer[head], &hdr, sizeof(DataHeader));
+    head = (head + sizeof(DataHeader)) % rb->size;
 
     for (int i = 0; i < length; i++) {
-        rb->buffer[atomic_load(&rb->head)] = data[i];
-        atomic_store(&rb->head, (atomic_load(&rb->head) + 1) % rb->size);
+        rb->buffer[head] = data[i];
+        head = (head + 1) % rb->size;
     }
 
+    atomic_store(&rb->head, head); // Update head pointer once
     return true;
 }
 
@@ -34,16 +36,18 @@ int ringbuffer_read(RingBuffer* rb, char* data, int length) {
         return 0;
     }
 
-    int initial_head = atomic_load(&rb->head);
-    int initial_tail = atomic_load(&rb->tail);
-    int available_data = (initial_head - initial_tail + rb->size) % rb->size;
+    int tail = atomic_load(&rb->tail);
+    DataHeader hdr;
+    memcpy(&hdr, &rb->buffer[tail], sizeof(DataHeader));
+    tail = (tail + sizeof(DataHeader)) % rb->size;
 
-    int count = length < available_data ? length : available_data;
+    int count = (hdr.data_size < length) ? hdr.data_size : length;
 
     for (int i = 0; i < count; i++) {
-        data[i] = rb->buffer[atomic_load(&rb->tail)];
-        atomic_store(&rb->tail, (atomic_load(&rb->tail) + 1) % rb->size);
+        data[i] = rb->buffer[tail];
+        tail = (tail + 1) % rb->size;
     }
 
+    atomic_store(&rb->tail, tail); // Update tail pointer once
     return count;
 }
