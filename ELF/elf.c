@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <dirent.h>  // For DIR, struct dirent
+#include <sys/stat.h> // For struct stat
+#include <unistd.h> // For access() function
 
 #include "process_info.h"
 #include "rbtree.h"
@@ -17,6 +20,8 @@ unsigned int hash(const char *str) {
     }
     return hash % HASHTABLE_SIZE;
 }
+
+struct elf_info *elf_table[HASHTABLE_SIZE];
 
 // 打印 ELF 文件头信息
 void print_elf_header(const Elf64_Ehdr *header) {
@@ -352,6 +357,89 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     close(fd);
     return final_symbols;
 }
+
+void scan_processes_and_cleanup() {
+    DIR *dir = opendir("/proc");
+    if (!dir) {
+        perror("Failed to open /proc directory");
+        return;
+    }                   
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+            int pid = atoi(entry->d_name);
+            if (pid <= 0) continue;
+
+            char path[256];
+            snprintf(path, sizeof(path), "/proc/%d", pid);
+
+            struct stat stat_buf;
+            if (stat(path, &stat_buf) == -1) {
+                // 进程目录不存在，说明进程已退出，需要清理
+                cleanup_process(pid);
+            } else {
+                // 检查start time，判断是否是同一个进程
+                if (is_pid_reused(pid, &stat_buf)) {
+                    // 如果PID被复用了，清理旧的进程数据
+                    cleanup_process(pid);
+                }
+            }
+        }
+
+    closedir(dir);
+}
+
+void parse_process_maps_and_update_elf(struct process* proc) {
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/maps", proc->pid);
+    
+    FILE* file = fopen(path, "r");
+    if (!file) {
+        perror("Failed to open maps file");
+        return;
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        char *start_addr, *end_addr, *path;
+        // 假设每行格式符合规范
+        sscanf(line, "%p-%p %*s %*s %*s %*s %s", &start_addr, &end_addr, path);
+
+        if (strstr(path, ".so") || strstr(path, ".exe")) {
+            // 是共享对象或可执行文件，更新ELF对象的引用计数
+            update_elf_ref_count(path, 1);
+        }
+    }
+
+    fclose(file);
+}
+
+void update_elf_ref_count(const char *filename, int count) {
+    unsigned int hash_value = hash(filename);
+    struct elf_info *elf = elf_table[hash_value];
+    
+    if (elf) {
+        elf->ref_count += count;
+        if (elf->ref_count == 0) {
+            free_elf_info(elf);
+            elf_table[hash_value] = NULL; // 从表中移除
+        }
+    } else if (count > 0) {
+        // ELF对象首次被引用，加载并初始化ELF对象
+        elf = malloc(sizeof(struct elf_info));
+        read_elf_file(filename, elf);
+        elf->ref_count = count;
+        elf_table[hash_value] = elf;
+    }
+}
+
+void start_cleanup_timer() {
+    while (1) {
+        scan_processes_and_cleanup();
+        sleep(30); // 每30秒执行一次
+    }
+}
+
 
 // #ifdef TESTELF
 

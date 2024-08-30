@@ -101,6 +101,8 @@ struct elf_info {
     Elf64_Phdr *phdrs;
     Elf64_Shdr *shdrs;
     char *shstrtab;
+    char filename[255];
+    int ref_count;
 };
 
 unsigned int parse_process_maps(struct process* proc);
