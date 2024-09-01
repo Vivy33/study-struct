@@ -192,31 +192,38 @@ int initialize_system(struct system_info* system_info) {
     return 0;
 }
 
-// 解析进程并获取VMA信息
-struct vma* get_process_and_vma(struct system_info* system_info, int pid, uint64_t real_addr) {
-    struct process* proc = find_new_process(system_info->procs, pid);
+// 解析进程
+struct process* get_process(struct system_info* sys_info, int pid) {
+    struct process* proc = find_new_process(sys_info->procs, pid);
     if (!proc) {
         fprintf(stderr, "无法创建或查找 PID 为 %d 的进程\n", pid);
         return NULL;
     }
+    return proc;
+}
 
+// 获取VMA信息
+struct vma* get_vma_from_process(struct process* proc, uint64_t real_addr) {
     struct vma* vma_info = find_vma_from_process(proc, real_addr);
     if (!vma_info) {
         fprintf(stderr, "无法获取地址 0x%lx 的 VMA 信息\n", real_addr);
         return NULL;
     }
-
     return vma_info;
 }
 
-// 获取ELF文件及符号信息
-char* get_elf_and_symbol(struct system_info* system_info, struct vma* vma_info, uint64_t relative_address) {
-    struct elf* elf_file = find_elf(system_info->elfs, vma_info->file_hash, vma_info->name);
+// 获取ELF文件
+struct elf* get_elf(struct system_info* sys_info, uint64_t file_hash, const char* name) {
+    struct elf* elf_file = find_elf(sys_info->elfs, file_hash, name);
     if (!elf_file) {
-        fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", vma_info->name);
+        fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", name);
         return NULL;
     }
+    return elf_file;
+}
 
+// 获取符号名称
+const char* get_symbol_name(struct elf* elf_file, uint64_t relative_address) {
     struct elf_symbols* elf_syms = (struct elf_symbols*)&elf_file->symbol_tree;
     return find_symbol_name_from_elf(elf_syms, relative_address);
 }
@@ -243,27 +250,42 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // 查找进程并获取VMA信息
-    struct vma* vma_info = get_process_and_vma(&system_info, pid, real_addr);
+    // 获取进程信息
+    struct process* proc_info = get_process_info(pid);
+    if (!proc_info) {
+    cleanup_system(&system_info);
+    return 1;
+    }
+
+    // 获取VMA信息
+    struct vma* vma_info = get_vma_info(proc_info, real_addr);
     if (!vma_info) {
-        cleanup_system(&system_info);
-        return 1;
+    cleanup_system(&system_info);
+    return 1;
     }
 
     // 打印 VMA 信息
     print_vma_info(vma_info);
 
-    // 查找 ELF 文件及符号名称
+    // 计算相对地址
     uint64_t relative_address = get_relative_address(real_addr, vma_info);
     printf("Relative address in ELF: 0x%lx\n", relative_address);
 
-    const char* symbol_name = get_elf_and_symbol(&system_info, vma_info, relative_address);
+    // 获取 ELF 文件
+    struct elf* elf_file = retrieve_elf(&system_info, vma_info->file_hash, vma_info->name);
+    if (!elf_file) {
+    printf("Error retrieving ELF file.\n");
+    return;
+    }
+
+    // 获取符号名称
+    const char* symbol_name = retrieve_symbol_name(elf_file, relative_address);
     if (symbol_name) {
         printf("Function name: %s\n", symbol_name);
     } else {
         printf("No function name found\n");
     }
-
+    
     // 清理系统资源
     cleanup_system(&system_info);
 
