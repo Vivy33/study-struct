@@ -12,6 +12,8 @@
 #include "process_info.h"
 #include "rbtree.h"
 
+#define ELF_MAGIC 0x464c457f
+
 // 哈希函数
 unsigned int hash(const char *str) {
     unsigned int hash = 0;
@@ -107,6 +109,51 @@ const char* get_symbol_name_by_address(Elf *elf, struct elf_info *elf_info, uint
         }
     }
     return NULL;
+}
+
+// 创建 ELF 文件并初始化头和节头
+int create_elf_file(const char* filename) {
+    int fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (fd < 0) {
+        perror("Failed to create file");
+        return -1;
+    }
+
+    Elf *elf = elf_begin(fd, ELF_C_WRITE, NULL);
+    if (elf == NULL) {
+        fprintf(stderr, "Failed to initialize ELF: %s\n", elf_errmsg(-1));
+        close(fd);
+        return -1;
+    }
+
+    // 初始化 ELF 头
+    Elf64_Ehdr ehdr;
+    memset(&ehdr, 0, sizeof(ehdr));
+    ehdr.e_ident[EI_MAG0] = ELFMAG0;
+    ehdr.e_ident[EI_MAG1] = ELFMAG1;
+    ehdr.e_ident[EI_MAG2] = ELFMAG2;
+    ehdr.e_ident[EI_MAG3] = ELFMAG3;
+    ehdr.e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr.e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr.e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr.e_type = ET_REL;
+    ehdr.e_machine = EM_X86_64;
+    ehdr.e_version = EV_CURRENT;
+    ehdr.e_ehsize = sizeof(ehdr);
+    ehdr.e_phentsize = sizeof(Elf64_Phdr);
+    ehdr.e_shentsize = sizeof(Elf64_Shdr);
+
+    if (elf_update(elf, ELF_C_WRITE) < 0) {
+        fprintf(stderr, "Failed to write ELF header: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        close(fd);
+        return -1;
+    }
+
+    // 关闭 ELF 文件和文件描述符
+    elf_end(elf);
+    close(fd);
+    return 0;
 }
 
 // 读取 ELF 文件并进行解析
@@ -305,7 +352,7 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     }
 
     Elf_Scn *scn = NULL;
-    int found_symtab = 0;
+    int found_symtab = 0, found_dynsym = 0;
 
     while ((scn = elf_nextscn(elf, scn)) != NULL) {
         GElf_Shdr shdr;
@@ -314,41 +361,20 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
             continue;
         }
 
+        struct elf_symbols* symbols = NULL;
         if (shdr.sh_type == SHT_SYMTAB) {
             symbols = process_symbol_table(elf, &shdr, elf_info);
-            if (!symbols) {
-                fprintf(stderr, "Failed to process .symtab\n");
+        } else if (shdr.sh_type == SHT_DYNSYM) {
+            symbols = process_dynamic_symbol_table(elf, &shdr, elf_info);
+        }
+
+        if (symbols) {
+            // 合并符号表
+            if (final_symbols) {
+                merge_symbols(final_symbols, symbols);
+                free_symbols(symbols);
             } else {
                 final_symbols = symbols;
-            }
-            found_symtab = 1;
-            break;
-        }
-    }
-
-    if (!found_symtab) {
-        scn = NULL;
-    }
-
-    while ((scn = elf_nextscn(elf, scn)) != NULL) {
-        GElf_Shdr shdr;
-        if (gelf_getshdr(scn, &shdr) != &shdr) {
-            fprintf(stderr, "Failed to get section header: %s\n", elf_errmsg(-1));
-            continue;
-        }
-
-        if (shdr.sh_type == SHT_DYNSYM) {
-            symbols = process_symbol_table(elf, &shdr, elf_info);
-            if (!symbols) {
-                fprintf(stderr, "Failed to process .dynsym\n");
-            } else {
-                if (final_symbols) {
-                    // 将 .dynsym 中的符号合并到 final_symbols 中
-                    merge_symbol_trees(&final_symbols->symbol_tree, &symbols->symbol_tree);
-                    free_elf_symbols(symbols); // 释放 symbols 结构的内存
-                } else {
-                    final_symbols = symbols;
-                }
             }
         }
     }
@@ -358,7 +384,26 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     return final_symbols;
 }
 
-void scan_processes_and_cleanup() {
+// 检查进程是否需要清理，并执行清理操作
+void cleanup_process(int pid) {
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d", pid);
+
+    struct stat stat_buf;
+    if (stat(path, &stat_buf) == -1) {
+        // 进程目录不存在，说明进程已退出，需要清理
+        cleanup_process(pid);
+    } else {
+        // 检查start time，判断是否是同一个进程
+        if (is_pid_reused(pid, &stat_buf)) {
+            // 如果PID被复用了，清理旧的进程数据
+            cleanup_process(pid);
+        }
+    }
+}
+
+// 扫描 /proc 目录以找到所有正在运行的进程
+void scan_processes() {
     DIR *dir = opendir("/proc");
     if (!dir) {
         perror("Failed to open /proc directory");
@@ -367,29 +412,25 @@ void scan_processes_and_cleanup() {
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-            int pid = atoi(entry->d_name);
-            if (pid <= 0) continue;
-
-            char path[256];
-            snprintf(path, sizeof(path), "/proc/%d", pid);
-
-            struct stat stat_buf;
-            if (stat(path, &stat_buf) == -1) {
-                // 进程目录不存在，说明进程已退出，需要清理
-                cleanup_process(pid);
-            } else {
-                // 检查start time，判断是否是同一个进程
-                if (is_pid_reused(pid, &stat_buf)) {
-                    // 如果PID被复用了，清理旧的进程数据
-                    cleanup_process(pid);
-                }
-            }
+        int pid = atoi(entry->d_name); // atoi 将字符串转换为整数
+        if (pid > 0) {
+            cleanup_process_if_needed(pid);
         }
+    }
 
     closedir(dir);
 }
 
-void parse_process_maps_and_update_elf(struct process* proc) {
+// 更新 ELF 文件的引用计数
+void update_elf_references(const char *path) {
+    if (strstr(path, ".so") || strstr(path, ".exe")) {
+        // 是共享对象或可执行文件，更新ELF对象的引用计数
+        update_elf_ref_count(path, 1);
+    }
+}
+
+// 解析进程的内存映射文件  /proc/[pid]/maps
+void parse_process_maps(struct process* proc) {
     char path[256];
     snprintf(path, sizeof(path), "/proc/%d/maps", proc->pid);
     
@@ -401,14 +442,11 @@ void parse_process_maps_and_update_elf(struct process* proc) {
 
     char line[256];
     while (fgets(line, sizeof(line), file)) {
-        char *start_addr, *end_addr, *path;
+        char *start_addr, *end_addr, *mapped_path;
         // 假设每行格式符合规范
-        sscanf(line, "%p-%p %*s %*s %*s %*s %s", &start_addr, &end_addr, path);
+        sscanf(line, "%p-%p %*s %*s %*s %*s %s", &start_addr, &end_addr, mapped_path);
 
-        if (strstr(path, ".so") || strstr(path, ".exe")) {
-            // 是共享对象或可执行文件，更新ELF对象的引用计数
-            update_elf_ref_count(path, 1);
-        }
+        update_elf_references(mapped_path);
     }
 
     fclose(file);
