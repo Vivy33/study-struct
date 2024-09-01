@@ -113,9 +113,7 @@ void print_vma_info(const struct vma* vma_info);
 void print_elf_header(const Elf64_Ehdr *header);
 void print_program_headers(const Elf64_Phdr *phdrs, uint16_t phnum);
 void print_section_headers(const Elf64_Shdr *shdrs, uint16_t shnum);
-void print_symbol_table(int fd, Elf64_Shdr *shdrs, uint16_t shnum, char *shstrtab);
 void find_symbol_by_address(int fd, Elf64_Shdr *shdrs, uint16_t shnum, char *shstrtab, uint64_t address);
 void read_elf_file(const char *filename, struct elf_info *elf_info);
-const char* get_symbol_name_by_address(struct elf_info *elf_info, uint64_t address);
 
 #endif
