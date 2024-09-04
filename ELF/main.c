@@ -155,22 +155,30 @@ uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
 }
 
 // 根据相对地址查找符号名称
-char* find_symbol_name_from_elf(struct elf_symbols* syms, const uint64_t relative_address) {
-    int left = 0;
-    int right = syms->symbol_count - 1;
-
-    while (left <= right) {
-        int mid = left + (right - left) / 2;
-        if (relative_address >= syms->syms[mid].start && relative_address < syms->syms[mid].end) {
-            return syms->syms[mid].name;
-        } else if (relative_address < syms->syms[mid].start) {
-            right = mid - 1;
+struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address) {
+    struct rb_node* node = proc->vma_tree.rb_node;
+    while (node) {
+        struct vma* vma = container_of(node, struct vma, vma_node);
+        if (address < vma->start) {
+            node = node->rb_left;
+        } else if (address >= vma->end) {
+            node = node->rb_right;
         } else {
-            left = mid + 1;
+            struct elf* elf = get_elf(proc, vma->file_hash, vma->name);
+            if (elf) {
+                struct elf_symbol* sym = find_symbol(elf->symbols, address);
+                if (sym) {
+                    struct symbol* result = malloc(sizeof(struct symbol));
+                    result->start = sym->address;
+                    result->end = sym->address + sym->size;
+                    result->name = strdup(sym->name);
+                    return result;
+                }
+            }
+            return NULL; // 符号未找到
         }
     }
-
-    return NULL;
+    return NULL; // VMA 中未找到地址
 }
 
 // 打印使用说明
