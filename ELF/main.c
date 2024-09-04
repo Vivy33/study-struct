@@ -84,16 +84,16 @@ struct elf* create_elf(struct elf_hash_table* elf_table, uint64_t file_hash, con
     struct elf new_elf = {0};
     new_elf.filename = strdup(filename);
     if (!new_elf.filename) {
-        fprintf(stderr, "Failed to allocate memory for filename\n");
+        fprintf(stderr, "无法为文件名分配内存\n");
         return NULL;
     }
 
     new_elf.file_hash = file_hash;
-    new_elf.elf_id = file_hash; // 真实场景中应使用 file_hash
+    new_elf.elf_id = file_hash; // 在真实场景中，应使用 file_hash
 
     // 解析 ELF 符号表
     if (parse_elf_symbols(&new_elf)) {
-        fprintf(stderr, "Failed to parse ELF symbols for %s\n", filename);
+        fprintf(stderr, "无法解析 ELF 符号表 %s\n", filename);
         free(new_elf.filename);
         return NULL;
     }
@@ -101,7 +101,7 @@ struct elf* create_elf(struct elf_hash_table* elf_table, uint64_t file_hash, con
     // 创建新的 elf_node
     struct elf_node* new_node = malloc(sizeof(struct elf_node));
     if (!new_node) {
-        fprintf(stderr, "Failed to allocate memory for elf_node\n");
+        fprintf(stderr, "无法为 elf_node 分配内存\n");
         free(new_elf.filename);
         return NULL;
     }
@@ -138,7 +138,7 @@ struct vma* find_vma_from_process(struct process* proc, unsigned long real_addr)
         else
             return vma_info;
     }
-    return NULL; // 未找到合法的VMA
+    return NULL; // 未找到
 }
 
 // 从 VMA 中获取 ELF 文件名
@@ -185,10 +185,9 @@ int initialize_system(struct system_info* system_info) {
     memset(system_info, 0, sizeof(struct system_info));
 
     if (elf_version(EV_CURRENT) == EV_NONE) {
-        fprintf(stderr, "Error: ELF library initialization failed: %s\n", elf_errmsg(-1));
+        fprintf(stderr, "错误: ELF 库初始化失败: %s\n", elf_errmsg(-1));
         return 1;
     }
-
     return 0;
 }
 
@@ -214,10 +213,16 @@ struct vma* get_vma_from_process(struct process* proc, uint64_t real_addr) {
 
 // 获取ELF文件
 struct elf* get_elf(struct system_info* sys_info, uint64_t file_hash, const char* name) {
-    struct elf* elf_file = find_elf(sys_info->elfs, file_hash, name);
+    struct elf_info* elf_file = find_elf(sys_info->elfs, file_hash, name);
     if (!elf_file) {
-        fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", name);
-        return NULL;
+        elf_file = create_elf(sys_info->elfs, file_hash, name);
+        if (!elf_file) {
+            fprintf(stderr, "无法查找或创建 ELF 文件: %s\n", name);
+            return NULL;
+        }
+    } else {
+        // 如果 ELF 已存在，增加引用计数
+        elf_file->ref_count++;
     }
     return elf_file;
 }
@@ -230,8 +235,18 @@ const char* get_symbol_name(struct elf* elf_file, uint64_t relative_address) {
 
 // 释放系统资源
 void cleanup_system(struct system_info* system_info) {
+    // 释放 ELF 节点
+    for (int i = 0; i < 1024; i++) {
+        struct elf_node* node = system_info->elfs->nodes[i];
+        while (node) {
+            struct elf_node* temp = node;
+            node = node->next;
+            free(temp->elf.filename);
+            free(temp);
+        }
+    }
+
     free_process_list(system_info->procs);
-    free_elf_list(system_info->elfs);
 }
 
 int main(int argc, char* argv[]) {

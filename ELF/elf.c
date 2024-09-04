@@ -340,7 +340,6 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
         return NULL;
     }
 
-    struct elf_symbols* symbols = NULL;
     struct elf_symbols* final_symbols = NULL;
 
     size_t shstrndx;
@@ -352,7 +351,6 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     }
 
     Elf_Scn *scn = NULL;
-    int found_symtab = 0, found_dynsym = 0;
 
     while ((scn = elf_nextscn(elf, scn)) != NULL) {
         GElf_Shdr shdr;
@@ -361,20 +359,22 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
             continue;
         }
 
+        // 选择合适的符号表，可以根据需要保留一个或两个
         struct elf_symbols* symbols = NULL;
         if (shdr.sh_type == SHT_SYMTAB) {
-            symbols = process_symbol_table(elf, &shdr, elf_info);
+            symbols = process_symbol_table(elf, scn, elf_info);
         } else if (shdr.sh_type == SHT_DYNSYM) {
-            symbols = process_dynamic_symbol_table(elf, &shdr, elf_info);
+            symbols = process_dynamic_symbol_table(elf, scn, elf_info);
         }
 
+        // 如果只需要一个符号表，则在此处跳出循环
         if (symbols) {
-            // 合并符号表
-            if (final_symbols) {
-                merge_symbols(final_symbols, symbols);
-                free_symbols(symbols);
-            } else {
+            if (!final_symbols) {
                 final_symbols = symbols;
+            } else {
+                // 这里可以选择直接返回或者处理其他符号表
+                free_symbols(symbols);
+                break; // 已找到所需符号表，不需要继续
             }
         }
     }
@@ -442,11 +442,26 @@ void parse_process_maps(struct process* proc) {
 
     char line[256];
     while (fgets(line, sizeof(line), file)) {
-        char *start_addr, *end_addr, *mapped_path;
-        // 假设每行格式符合规范
-        sscanf(line, "%p-%p %*s %*s %*s %*s %s", &start_addr, &end_addr, mapped_path);
+        void *start_addr, *end_addr;
+        char perms[5], dev[6], mapname[256] = "";
+        unsigned long offset;
+        int inode;
 
-        update_elf_references(mapped_path);
+        // 解析每一行，mapname 可能为空（匿名内存区域）
+        int items_read = sscanf(line, "%p-%p %4s %lx %5s %d %255s", &start_addr, &end_addr, perms, &offset, dev, &inode, mapname);
+
+        if (items_read < 6) {
+            // 如果读取的字段少于6个，表示解析出错或者行格式不对
+            continue;
+        }
+
+        if (strlen(mapname) > 0) {
+            // 如果 mapname 不为空，表示这是一个映射到文件的内存区域
+            update_elf_references(mapname);
+        } else {
+            // 处理匿名内存（没有文件路径的内存映射）
+            printf("Anonymous memory region: %p-%p\n", start_addr, end_addr);
+        }
     }
 
     fclose(file);
