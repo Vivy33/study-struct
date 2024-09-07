@@ -171,21 +171,42 @@ struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address)
             struct elf* elf = get_elf(proc, vma->file_hash, vma->region_name);
             if (elf) {
                 // 查找ELF文件中的符号
-                struct rb_node* sym_node = elf->symbol_tree.rb_root.rb_node;
-                while (sym_node) {
-                    struct symbol* sym = container_of(sym_node, struct symbol, symbol_node);
+                struct rb_node* sym_node;
+                Elf_Scn *scn = NULL;
+                Elf64_Shdr shdr;
+                GElf_Shdr gshdr;
 
-                    if (address < sym->start_addr) {
-                        sym_node = sym_node->rb_left;
-                    } else if (address >= sym->start_addr + sym->size) {
-                        sym_node = sym_node->rb_right;
-                    } else {
-                        // 找到匹配的符号
-                        struct symbol* result = malloc(sizeof(struct symbol));
-                        result->start_addr = sym->start_addr;
-                        result->size = sym->size;
-                        result->name = strdup(sym->name); // 拷贝符号名称
-                        return result;
+                // 遍历节头表，查找符号表
+                for (size_t i = 0; (scn = elf_nextscn(elf->elf_id, scn)) != NULL; i++) {
+                    if (gelf_getshdr(scn, &gshdr) != &gshdr) {
+                        fprintf(stderr, "Failed to get section header: %s\n", elf_errmsg(-1));
+                        continue;
+                    }
+                    
+                    if (gshdr.sh_type == SHT_SYMTAB || gshdr.sh_type == SHT_DYNSYM) {
+                        // 找到符号表
+                        Elf_Data *data = elf_getdata(scn, NULL);
+                        if (data == NULL) {
+                            fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
+                            continue;
+                        }
+
+                        size_t sym_count = gshdr.sh_size / gshdr.sh_entsize;
+                        for (size_t j = 0; j < sym_count; j++) {
+                            GElf_Sym symbol;
+                            if (gelf_getsym(data, j, &symbol) != &symbol) {
+                                fprintf(stderr, "Failed to get symbol: %s\n", elf_errmsg(-1));
+                                continue;
+                            }
+
+                            if (address >= symbol.st_value && address < symbol.st_value + symbol.st_size) {
+                                struct symbol* result = malloc(sizeof(struct symbol));
+                                result->start_addr = symbol.st_value;
+                                result->size = symbol.st_size;
+                                result->name = strdup(elf_strptr(elf->elf_id, gshdr.sh_link, symbol.st_name));
+                                return result;
+                            }
+                        }
                     }
                 }
             }
@@ -290,15 +311,15 @@ int main(int argc, char* argv[]) {
     // 获取进程信息
     struct process* proc_info = get_process_info(pid);
     if (!proc_info) {
-    cleanup_system(&system_info);
-    return 1;
+        cleanup_system(&system_info);
+        return 1;
     }
 
-    // 获取VMA信息
+    // 获取 VMA 信息
     struct vma* vma_info = get_vma_info(proc_info, real_addr);
     if (!vma_info) {
-    cleanup_system(&system_info);
-    return 1;
+        cleanup_system(&system_info);
+        return 1;
     }
 
     // 打印 VMA 信息
@@ -308,11 +329,16 @@ int main(int argc, char* argv[]) {
     uint64_t relative_address = get_relative_address(real_addr, vma_info);
     printf("Relative address in ELF: 0x%lx\n", relative_address);
 
+    // 更新 ELF 引用计数（增加引用）
+    update_elf_ref_count(vma_info->region_name, 1);
+
     // 获取 ELF 文件
     struct elf* elf_file = retrieve_elf(&system_info, vma_info->file_hash, vma_info->region_name);
     if (!elf_file) {
-    printf("Error retrieving ELF file.\n");
-    return;
+        printf("Error retrieving ELF file.\n");
+        update_elf_ref_count(vma_info->region_name, -1); // 失败时减少引用计数
+        cleanup_system(&system_info);
+        return 1;
     }
 
     // 获取符号名称
@@ -322,7 +348,10 @@ int main(int argc, char* argv[]) {
     } else {
         printf("No function name found\n");
     }
-    
+
+    // 更新 ELF 引用计数（减少引用）
+    update_elf_ref_count(vma_info->region_name, -1);
+
     // 清理系统资源
     cleanup_system(&system_info);
 
