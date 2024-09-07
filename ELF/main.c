@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 
 #include "process_info.h"
 #include "rbtree.h"
@@ -154,11 +155,61 @@ uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
     return real_addr - vma->start + vma->offset;
 }
 
-// 根据相对地址查找符号名称
+// 查找符号名称的辅助函数
+static struct symbol* find_symbol_from_elf(Elf* elf, uint64_t address) {
+    Elf_Scn *scn = NULL;
+    Elf64_Shdr shdr;
+    GElf_Shdr gshdr;
+
+    // 优先查找 .symtab 符号表
+    while ((scn = elf_nextscn(elf, scn)) != NULL) {
+        if (gelf_getshdr(scn, &gshdr) != &gshdr) {
+            fprintf(stderr, "Failed to get section header: %s\n", elf_errmsg(-1));
+            continue;
+        }
+
+        // 查找符号表
+        if (gshdr.sh_type == SHT_SYMTAB || gshdr.sh_type == SHT_DYNSYM) {
+            Elf_Data *data = elf_getdata(scn, NULL);
+            if (data == NULL) {
+                fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
+                continue;
+            }
+
+            size_t sym_count = gshdr.sh_size / gshdr.sh_entsize;
+            for (size_t j = 0; j < sym_count; j++) {
+                GElf_Sym symbol;
+                if (gelf_getsym(data, j, &symbol) != &symbol) {
+                    fprintf(stderr, "Failed to get symbol: %s\n", elf_errmsg(-1));
+                    continue;
+                }
+
+                if (address >= symbol.st_value && address < symbol.st_value + symbol.st_size) {
+                    struct symbol* result = malloc(sizeof(struct symbol));
+                    if (!result) {
+                        perror("Failed to allocate memory for symbol");
+                        return NULL;
+                    }
+                    result->start_addr = symbol.st_value;
+                    result->size = symbol.st_size;
+                    result->name = strdup(elf_strptr(elf, gshdr.sh_link, symbol.st_name));
+                    if (!result->name) {
+                        perror("Failed to duplicate symbol name");
+                        free(result);
+                        return NULL;
+                    }
+                    return result;
+                }
+            }
+        }
+    }
+    return NULL; // 符号未找到
+}
+
+// 查找地址对应的符号名称
 struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address) {
     struct rb_node* node = proc->vma_tree.rb_node; // 从 VMA 树的根节点开始
 
-    // 遍历 VMA 红黑树，找到包含指定地址的 VMA
     while (node) {
         struct vma* vma = container_of(node, struct vma, vma_node);
 
@@ -168,56 +219,30 @@ struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address)
             node = node->rb_right; // 在右子树中查找
         } else {
             // 找到包含该地址的 VMA
-            struct elf* elf = get_elf(proc, vma->file_hash, vma->region_name);
-            if (elf) {
-                Elf_Scn *scn = NULL;
-                Elf64_Shdr shdr;
-                GElf_Shdr gshdr;
-
-                // 遍历节头表，查找符号表
-                while ((scn = elf_nextscn(elf->elf_id, scn)) != NULL) {
-                    if (gelf_getshdr(scn, &gshdr) != &gshdr) {
-                        fprintf(stderr, "Failed to get section header: %s\n", elf_errmsg(-1));
-                        continue;
-                    }
-
-                    // 查找符号表
-                    if (gshdr.sh_type == SHT_SYMTAB || gshdr.sh_type == SHT_DYNSYM) {
-                        Elf_Data *data = elf_getdata(scn, NULL);
-                        if (data == NULL) {
-                            fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
-                            continue;
-                        }
-
-                        size_t sym_count = gshdr.sh_size / gshdr.sh_entsize;
-                        for (size_t j = 0; j < sym_count; j++) {
-                            GElf_Sym symbol;
-                            if (gelf_getsym(data, j, &symbol) != &symbol) {
-                                fprintf(stderr, "Failed to get symbol: %s\n", elf_errmsg(-1));
-                                continue;
-                            }
-
-                            if (address >= symbol.st_value && address < symbol.st_value + symbol.st_size) {
-                                struct symbol* result = malloc(sizeof(struct symbol));
-                                if (!result) {
-                                    perror("Failed to allocate memory for symbol");
-                                    return NULL;
-                                }
-                                result->start_addr = symbol.st_value;
-                                result->size = symbol.st_size;
-                                result->name = strdup(elf_strptr(elf->elf_id, gshdr.sh_link, symbol.st_name));
-                                if (!result->name) {
-                                    perror("Failed to duplicate symbol name");
-                                    free(result);
-                                    return NULL;
-                                }
-                                return result;
-                            }
-                        }
-                    }
-                }
+            Elf *elf = NULL;
+            int fd = open(vma->file_hash, O_RDONLY, 0);
+            if (fd < 0) {
+                perror("Failed to open ELF file");
+                return NULL;
             }
-            return NULL; // 符号未找到
+            if (elf_version(EV_CURRENT) == EV_NONE) {
+                fprintf(stderr, "ELF library version mismatch\n");
+                close(fd);
+                return NULL;
+            }
+            elf = elf_begin(fd, ELF_C_READ, NULL);
+            if (!elf) {
+                fprintf(stderr, "Failed to open ELF file: %s\n", elf_errmsg(-1));
+                close(fd);
+                return NULL;
+            }
+
+            struct symbol* result = find_symbol_from_elf(elf, address);
+
+            elf_end(elf);
+            close(fd);
+
+            return result; // 返回找到的符号
         }
     }
     return NULL; // VMA 中未找到地址
