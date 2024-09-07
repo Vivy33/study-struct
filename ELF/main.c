@@ -70,8 +70,8 @@ struct elf* find_elf(struct elf_hash_table* elf_table, uint64_t file_hash, const
 
     // 遍历链表查找匹配的 ELF 文件
     while (node) {
-        if (node->elf.file_hash == file_hash && strcmp(node->elf.filename, filename) == 0) {
-            return &node->elf;
+        if (node->elf_data.file_hash == file_hash && strcmp(node->elf_data.filename, filename) == 0) {
+            return &node->elf_data;
         }
         node = node->next;
     }
@@ -106,7 +106,7 @@ struct elf* create_elf(struct elf_hash_table* elf_table, uint64_t file_hash, con
         return NULL;
     }
 
-    new_node->elf = new_elf;
+    new_node->elf_data = new_elf;
     new_node->next = NULL;
 
     // 插入到哈希表中
@@ -121,7 +121,7 @@ struct elf* create_elf(struct elf_hash_table* elf_table, uint64_t file_hash, con
         current_node->next = new_node;
     }
 
-    return &new_node->elf;
+    return &new_node->elf_data;
 }
 
 // 从进程中查找 VMA 信息
@@ -143,7 +143,7 @@ struct vma* find_vma_from_process(struct process* proc, unsigned long real_addr)
 
 // 从 VMA 中获取 ELF 文件名
 char* get_elfname_from_vma(struct vma* vma) {
-    return vma->name;
+    return vma->region_name;
 }
 
 // 获取 ELF 文件的符号信息
@@ -156,29 +156,43 @@ uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
 
 // 根据相对地址查找符号名称
 struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address) {
-    struct rb_node* node = proc->vma_tree.rb_node;
+    struct rb_node* node = proc->vma_tree.rb_node; // 从VMA树的根节点开始
+
+    // 遍历VMA红黑树，找到包含指定地址的VMA
     while (node) {
         struct vma* vma = container_of(node, struct vma, vma_node);
+
         if (address < vma->start) {
-            node = node->rb_left;
+            node = node->rb_left; // 在左子树中查找
         } else if (address >= vma->end) {
-            node = node->rb_right;
+            node = node->rb_right; // 在右子树中查找
         } else {
-            struct elf* elf = get_elf(proc, vma->file_hash, vma->name);
+            // 找到包含该地址的VMA
+            struct elf* elf = get_elf(proc, vma->file_hash, vma->region_name);
             if (elf) {
-                struct elf_symbol* sym = find_symbol(elf->symbols, address);
-                if (sym) {
-                    struct symbol* result = malloc(sizeof(struct symbol));
-                    result->start = sym->address;
-                    result->end = sym->address + sym->size;
-                    result->name = strdup(sym->name);
-                    return result;
+                // 查找ELF文件中的符号
+                struct rb_node* sym_node = elf->symbol_tree.rb_root.rb_node;
+                while (sym_node) {
+                    struct symbol* sym = container_of(sym_node, struct symbol, symbol_node);
+
+                    if (address < sym->start_addr) {
+                        sym_node = sym_node->rb_left;
+                    } else if (address >= sym->start_addr + sym->size) {
+                        sym_node = sym_node->rb_right;
+                    } else {
+                        // 找到匹配的符号
+                        struct symbol* result = malloc(sizeof(struct symbol));
+                        result->start_addr = sym->start_addr;
+                        result->size = sym->size;
+                        result->name = strdup(sym->name); // 拷贝符号名称
+                        return result;
+                    }
                 }
             }
             return NULL; // 符号未找到
         }
     }
-    return NULL; // VMA 中未找到地址
+    return NULL; // VMA中未找到地址
 }
 
 // 打印使用说明
@@ -221,7 +235,7 @@ struct vma* get_vma_from_process(struct process* proc, uint64_t real_addr) {
 
 // 获取ELF文件
 struct elf* get_elf(struct system_info* sys_info, uint64_t file_hash, const char* name) {
-    struct elf_info* elf_file = find_elf(sys_info->elfs, file_hash, name);
+    struct elf* elf_file = find_elf(sys_info->elfs, file_hash, name);
     if (!elf_file) {
         elf_file = create_elf(sys_info->elfs, file_hash, name);
         if (!elf_file) {
@@ -249,7 +263,7 @@ void cleanup_system(struct system_info* system_info) {
         while (node) {
             struct elf_node* temp = node;
             node = node->next;
-            free(temp->elf.filename);
+            free(temp->elf_data.filename);
             free(temp);
         }
     }
@@ -295,7 +309,7 @@ int main(int argc, char* argv[]) {
     printf("Relative address in ELF: 0x%lx\n", relative_address);
 
     // 获取 ELF 文件
-    struct elf* elf_file = retrieve_elf(&system_info, vma_info->file_hash, vma_info->name);
+    struct elf* elf_file = retrieve_elf(&system_info, vma_info->file_hash, vma_info->region_name);
     if (!elf_file) {
     printf("Error retrieving ELF file.\n");
     return;
