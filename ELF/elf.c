@@ -24,6 +24,10 @@ unsigned int hash(const char *str) {
     return hash % HASHTABLE_SIZE;
 }
 
+// 全局变量，用于管理 ELF 文件引用计数
+static int elf_ref_count = 0;
+static const char *current_elf_path = NULL;
+
 // 根据地址查找符号名
 const char* get_symbol_name_by_address(Elf *elf, struct elf *elf_info, uint64_t address) {
     for (int i = 0; i < elf_info->header.e_shnum; i++) {
@@ -498,7 +502,7 @@ void parse_process_maps(struct process* proc) {
 struct elf *elf_table[HASHTABLE_SIZE];
 
 // 更新 ELF 引用计数
-void update_elf_ref_count(const char *filename, int count) {
+void update_elf_ref_count(const char *filename, int count) {                        
     unsigned int hash_value = hash(filename);
     struct elf *elf = elf_table[hash_value];
     
