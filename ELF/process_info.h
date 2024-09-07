@@ -21,9 +21,11 @@ struct vma {
     uint64_t end;               // 结束地址
     unsigned int flags;         // 标志位，标识权限或属性，如读写权限
     uint64_t offset;            // 偏移量，通常用于映射文件
-    char* region_name;          // 内存区域的名称
+    char *region_name;          // 内存区域的名称
     uint64_t file_hash;         // 由文件路径生成的哈希值，用于识别与文件关联的内存映射
     struct rb_node vma_node;    // 红黑树节点，用于在进程的红黑树中管理VMAs
+    struct symbol *symbol_table;// 符号表，假设每个 VMA 节点有一个符号表
+    size_t symbol_count;        // 符号表的符号数量
 };
 
 // 定义进程结构体
