@@ -41,7 +41,7 @@ struct process {
 // 所以其他场景下，都该使用 process，而不是 process_node
 struct process_node {
     struct process procs;         // 进程信息
-    struct process_node* next;   // 链表指针，用于处理哈希冲突
+    struct process_node* next;    // 链表指针，用于处理哈希冲突
 };
 
 // 定义哈希表结构体
@@ -52,7 +52,7 @@ struct process_hash_table {
 // 定义符号结构，用于表示程序中的符号（如函数、变量）
 struct symbol {
     char* name;                  // 符号的名称
-    uint64_t start_addr;            // 符号的地址（起始地址）
+    uint64_t start_addr;         // 符号的地址（起始地址）
     uint64_t size;               // 符号的大小（即结束地址 - 起始地址）
     struct rb_node symbol_node;  // 红黑树节点，用于符号红黑树的管理
 };
@@ -96,8 +96,8 @@ struct system_info {
 
 struct process* read_process_info(struct system_info* system_info, int pid);
 int get_process_vma_info(struct system_info* system_info, int pid, uint64_t addr, struct vma* out_vma);
+void update_elf_ref_count(const char *path, int increment);
 void print_vma_info(const struct vma* vma_info);
-
 void print_elf_header(const Elf64_Ehdr *header);
 void print_program_headers(const Elf64_Phdr *phdrs, uint16_t phnum);
 void print_section_headers(const Elf64_Shdr *shdrs, uint16_t shnum);
