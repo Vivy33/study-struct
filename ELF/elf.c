@@ -13,6 +13,7 @@
 #include "rbtree.h"
 
 #define ELF_MAGIC 0x464c457f
+#define SECTION_NAME ".text"
 
 // 哈希函数
 unsigned int hash(const char *str) {
@@ -23,78 +24,8 @@ unsigned int hash(const char *str) {
     return hash % HASHTABLE_SIZE;
 }
 
-struct elf_info *elf_table[HASHTABLE_SIZE];
-
-// 打印 ELF 文件头信息
-void print_elf_header(const Elf64_Ehdr *header) {
-    printf("ELF Header:\n");
-    printf("  Type: %u\n", header->e_type);
-    printf("  Machine: %u\n", header->e_machine);
-    printf("  Version: %u\n", header->e_version);
-    printf("  Entry point address: 0x%lx\n", header->e_entry);
-    printf("  Start of program headers: %lu (bytes into file)\n", header->e_phoff);
-    printf("  Start of section headers: %lu (bytes into file)\n", header->e_shoff);
-    printf("  Flags: 0x%x\n", header->e_flags);
-    printf("  Size of this header: %u (bytes)\n", header->e_ehsize);
-    printf("  Size of program headers: %u (bytes)\n", header->e_phentsize);
-    printf("  Number of program headers: %u\n", header->e_phnum);
-    printf("  Size of section headers: %u (bytes)\n", header->e_shentsize);
-    printf("  Number of section headers: %u\n", header->e_shnum);
-    printf("  Section header string table index: %u\n", header->e_shstrndx);
-}
-
-// 打印程序头
-void print_program_headers(const Elf64_Phdr *phdrs, uint16_t phnum) {
-    printf("Program Headers:\n");
-    for (int i = 0; i < phnum; ++i) {
-        printf("  Type: %u\n", phdrs[i].p_type);
-        printf("  Flags: 0x%x\n", phdrs[i].p_flags);
-        printf("  Offset: 0x%lx\n", phdrs[i].p_offset);
-        printf("  Virtual Address: 0x%lx\n", phdrs[i].p_vaddr);
-        printf("  Physical Address: 0x%lx\n", phdrs[i].p_paddr);
-        printf("  File Size: %lu\n", phdrs[i].p_filesz);
-        printf("  Memory Size: %lu\n", phdrs[i].p_memsz);
-        printf("  Alignment: %lu\n", phdrs[i].p_align);
-    }
-}
-
-// 打印节头
-void print_section_headers(const Elf64_Shdr *shdrs, uint16_t shnum) {
-    printf("Section Headers:\n");
-    for (int i = 0; i < shnum; ++i) {
-        printf("  Name: %u\n", shdrs[i].sh_name);
-        printf("  Type: %u\n", shdrs[i].sh_type);
-        printf("  Flags: 0x%lx\n", shdrs[i].sh_flags);
-        printf("  Address: 0x%lx\n", shdrs[i].sh_addr);
-        printf("  Offset: %lu\n", shdrs[i].sh_offset);
-        printf("  Size: %lu\n", shdrs[i].sh_size);
-        printf("  Link: %u\n", shdrs[i].sh_link);
-        printf("  Info: %u\n", shdrs[i].sh_info);
-        printf("  Address Alignment: %lu\n", shdrs[i].sh_addralign);
-        printf("  Entry Size: %lu\n", shdrs[i].sh_entsize);
-    }
-}
-
-// 打印符号表
-void print_symbol_table(Elf *elf, Elf64_Shdr *shdrs, uint16_t shnum) {
-    for (int i = 0; i < shnum; i++) {
-        if (shdrs[i].sh_type == SHT_SYMTAB) {
-            Elf_Scn *scn = elf_getscn(elf, i);
-            Elf_Data *data = elf_getdata(scn, NULL);
-            int num_symbols = shdrs[i].sh_size / shdrs[i].sh_entsize;
-
-            for (int j = 0; j < num_symbols; j++) {
-                GElf_Sym sym;
-                gelf_getsym(data, j, &sym);
-                const char *name = elf_strptr(elf, shdrs[i].sh_link, sym.st_name);
-                printf("Symbol: %s, Value: 0x%lx, Size: %lu\n", name, sym.st_value, sym.st_size);
-            }
-        }
-    }
-}
-
 // 根据地址查找符号名
-const char* get_symbol_name_by_address(Elf *elf, struct elf_info *elf_info, uint64_t address) {
+const char* get_symbol_name_by_address(Elf *elf, struct elf *elf_info, uint64_t address) {
     for (int i = 0; i < elf_info->header.e_shnum; i++) {
         if (elf_info->shdrs[i].sh_type == SHT_SYMTAB) {
             Elf_Data *data = elf_getdata(elf_getscn(elf, i), NULL);
@@ -113,12 +44,20 @@ const char* get_symbol_name_by_address(Elf *elf, struct elf_info *elf_info, uint
 
 // 创建 ELF 文件并初始化头和节头
 int create_elf_file(const char* filename) {
+    // 打开文件
     int fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
     if (fd < 0) {
         perror("Failed to create file");
         return -1;
     }
 
+    // 初始化 ELF
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        fprintf(stderr, "ELF library is out of date\n");
+        close(fd);
+        return -1;
+    }
+    
     Elf *elf = elf_begin(fd, ELF_C_WRITE, NULL);
     if (elf == NULL) {
         fprintf(stderr, "Failed to initialize ELF: %s\n", elf_errmsg(-1));
@@ -142,9 +81,68 @@ int create_elf_file(const char* filename) {
     ehdr.e_ehsize = sizeof(ehdr);
     ehdr.e_phentsize = sizeof(Elf64_Phdr);
     ehdr.e_shentsize = sizeof(Elf64_Shdr);
+    ehdr.e_shnum = 2; // 1 for section headers + 1 for the null section
+    ehdr.e_shstrndx = 1; // Index of the section header string table
 
     if (elf_update(elf, ELF_C_WRITE) < 0) {
         fprintf(stderr, "Failed to write ELF header: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        close(fd);
+        return -1;
+    }
+
+    // 添加节头
+    Elf_Scn *scn;
+    Elf64_Shdr shdr;
+    memset(&shdr, 0, sizeof(shdr));
+    shdr.sh_name = 0; // Null section
+    shdr.sh_type = SHT_NULL;
+    shdr.sh_flags = 0;
+    shdr.sh_addr = 0;
+    shdr.sh_offset = 0;
+    shdr.sh_size = 0;
+    shdr.sh_link = 0;
+    shdr.sh_info = 0;
+    shdr.sh_addralign = 0;
+    shdr.sh_entsize = 0;
+
+    // 创建 null section
+    scn = elf_newscn(elf);
+    if (!scn) {
+        fprintf(stderr, "Failed to create section: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        close(fd);
+        return -1;
+    }
+    if (elf32_update(elf, ELF_C_WRITE) < 0) {
+        fprintf(stderr, "Failed to write section header: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        close(fd);
+        return -1;
+    }
+
+    // 创建 .text 节
+    scn = elf_newscn(elf);
+    if (!scn) {
+        fprintf(stderr, "Failed to create section: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        close(fd);
+        return -1;
+    }
+
+    shdr.sh_name = elf_strptr(elf, ehdr.e_shstrndx, SECTION_NAME);
+    shdr.sh_type = SHT_PROGBITS;
+    shdr.sh_flags = SHF_ALLOC | SHF_EXECINSTR;
+    shdr.sh_addr = 0;
+    shdr.sh_offset = 0;
+    shdr.sh_size = 0;
+    shdr.sh_link = 0;
+    shdr.sh_info = 0;
+    shdr.sh_addralign = 16;
+    shdr.sh_entsize = 0;
+
+    if (elf32_update(elf, ELF_C_WRITE) < 0) {
+        fprintf(stderr, "Failed to write section header: %s\n", elf_errmsg(-1));
         elf_end(elf);
         close(fd);
         return -1;
@@ -157,7 +155,7 @@ int create_elf_file(const char* filename) {
 }
 
 // 读取 ELF 文件并进行解析
-void read_elf_file(const char *filename, struct elf_info *elf_info) {
+void read_elf_file(const char *filename, struct elf *elf_info) {
     int fd = open(filename, O_RDONLY);
     if (fd == -1) {
         perror("Failed to open file");
@@ -171,8 +169,23 @@ void read_elf_file(const char *filename, struct elf_info *elf_info) {
         exit(EXIT_FAILURE);
     }
 
+    // 检查 ELF 文件是否合法
+    if (elf_info->header.e_ident[EI_MAG0] != ELFMAG0 ||
+        elf_info->header.e_ident[EI_MAG1] != ELFMAG1 ||
+        elf_info->header.e_ident[EI_MAG2] != ELFMAG2 ||
+        elf_info->header.e_ident[EI_MAG3] != ELFMAG3) {
+        fprintf(stderr, "Not a valid ELF file\n");
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
+
     // 读取程序头
     elf_info->phdrs = malloc(elf_info->header.e_phnum * sizeof(Elf64_Phdr));
+    if (elf_info->phdrs == NULL) {
+        perror("Failed to allocate memory for program headers");
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
     if (pread(fd, elf_info->phdrs, elf_info->header.e_phnum * sizeof(Elf64_Phdr), elf_info->header.e_phoff) != elf_info->header.e_phnum * sizeof(Elf64_Phdr)) {
         perror("Failed to read program headers");
         free(elf_info->phdrs);
@@ -182,6 +195,12 @@ void read_elf_file(const char *filename, struct elf_info *elf_info) {
 
     // 读取节头
     elf_info->shdrs = malloc(elf_info->header.e_shnum * sizeof(Elf64_Shdr));
+    if (elf_info->shdrs == NULL) {
+        perror("Failed to allocate memory for section headers");
+        free(elf_info->phdrs);
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
     if (pread(fd, elf_info->shdrs, elf_info->header.e_shnum * sizeof(Elf64_Shdr), elf_info->header.e_shoff) != elf_info->header.e_shnum * sizeof(Elf64_Shdr)) {
         perror("Failed to read section headers");
         free(elf_info->shdrs);
@@ -192,6 +211,13 @@ void read_elf_file(const char *filename, struct elf_info *elf_info) {
 
     // 读取节头字符串表
     elf_info->shstrtab = malloc(elf_info->shdrs[elf_info->header.e_shstrndx].sh_size);
+    if (elf_info->shstrtab == NULL) {
+        perror("Failed to allocate memory for section header string table");
+        free(elf_info->shdrs);
+        free(elf_info->phdrs);
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
     if (pread(fd, elf_info->shstrtab, elf_info->shdrs[elf_info->header.e_shstrndx].sh_size, elf_info->shdrs[elf_info->header.e_shstrndx].sh_offset) != elf_info->shdrs[elf_info->header.e_shstrndx].sh_size) {
         perror("Failed to read section header string table");
         free(elf_info->shstrtab);
@@ -205,21 +231,23 @@ void read_elf_file(const char *filename, struct elf_info *elf_info) {
 }
 
 // 释放 ELF 信息占用的内存
-void free_elf_info(struct elf_info *elf_info) {
-    free(elf_info->phdrs);
-    free(elf_info->shdrs);
-    free(elf_info->shstrtab);
+void free_elf_info(struct elf *elf_info) {
+    if (elf_info) {
+        free(elf_info->phdrs);
+        free(elf_info->shdrs);
+        free(elf_info->shstrtab);
+    }
 }
 
 // 释放符号节点
-void free_elf_symbols(struct elf_symbol* symbol) {
+void free_elf_symbols(struct symbol* symbol) {
     if (symbol) {
         free(symbol->name);
         free(symbol);
     }
 }
 
-struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_info *elf_info) {
+struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *elf_info) {
     Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
     if (!data) {
         fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
@@ -264,7 +292,7 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
                 continue;
             }
 
-            struct elf_symbol* new_sym = malloc(sizeof(struct elf_symbol));
+            struct symbol* new_sym = malloc(sizeof(struct symbol));
             if (!new_sym) {
                 fprintf(stderr, "Memory allocation failed\n");
                 free_elf_symbols(new_sym);
@@ -272,7 +300,7 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
             }
 
             new_sym->name = strdup(name);
-            new_sym->address = sym_address;
+            new_sym->start_addr = sym_address;
             new_sym->size = sym.st_size;
 
             // 插入到红黑树中
@@ -286,13 +314,13 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf_i
 void merge_symbol_trees(struct rb_root *dst, struct rb_root *src) {
     struct rb_node *node = rb_first(src);
     while (node) {
-        struct elf_symbol *src_sym = rb_entry(node, struct elf_symbol, symbol_node);
+        struct symbol *src_sym = rb_entry(node, struct symbol, symbol_node);
         node = rb_next(node);
 
         struct rb_node **new = &(dst->rb_node), *parent = NULL;
         int duplicate = 0;
         while (*new) {
-            struct elf_symbol *this = rb_entry(*new, struct elf_symbol, symbol_node);
+            struct symbol *this = rb_entry(*new, struct symbol, symbol_node);
 
             parent = *new;
             int cmp = strcmp(src_sym->name, this->name);
@@ -309,14 +337,14 @@ void merge_symbol_trees(struct rb_root *dst, struct rb_root *src) {
         }
 
         if (!duplicate) {
-            struct elf_symbol *new_sym = malloc(sizeof(struct elf_symbol));
+            struct symbol *new_sym = malloc(sizeof(struct symbol));
             if (!new_sym) {
                 fprintf(stderr, "Memory allocation failed during merging symbols\n");
                 continue;
             }
 
             new_sym->name = strdup(src_sym->name);
-            new_sym->address = src_sym->address;
+            new_sym->start_addr = src_sym->start_addr;
             new_sym->size = src_sym->size;
             new_sym->symbol_node.rb_left = new_sym->symbol_node.rb_right = NULL;
 
@@ -364,7 +392,7 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
         if (shdr.sh_type == SHT_SYMTAB) {
             symbols = process_symbol_table(elf, scn, elf_info);
         } else if (shdr.sh_type == SHT_DYNSYM) {
-            symbols = process_dynamic_symbol_table(elf, scn, elf_info);
+            symbols = process_dynamic_symbol_table(elf, scn, elf_info);// TODO 符号表覆盖
         }
 
         // 如果只需要一个符号表，则在此处跳出循环
@@ -467,19 +495,26 @@ void parse_process_maps(struct process* proc) {
     fclose(file);
 }
 
+struct elf *elf_table[HASHTABLE_SIZE];
+
+// 更新 ELF 引用计数
 void update_elf_ref_count(const char *filename, int count) {
     unsigned int hash_value = hash(filename);
-    struct elf_info *elf = elf_table[hash_value];
+    struct elf *elf = elf_table[hash_value];
     
     if (elf) {
         elf->ref_count += count;
-        if (elf->ref_count == 0) {
+        if (elf->ref_count <= 0) {
             free_elf_info(elf);
             elf_table[hash_value] = NULL; // 从表中移除
         }
     } else if (count > 0) {
-        // ELF对象首次被引用，加载并初始化ELF对象
-        elf = malloc(sizeof(struct elf_info));
+        // ELF 对象首次被引用，加载并初始化 ELF 对象
+        elf = malloc(sizeof(struct elf));
+        if (!elf) {
+            perror("Failed to allocate memory for ELF");
+            exit(EXIT_FAILURE);
+        }
         read_elf_file(filename, elf);
         elf->ref_count = count;
         elf_table[hash_value] = elf;
