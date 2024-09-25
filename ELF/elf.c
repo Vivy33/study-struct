@@ -159,18 +159,18 @@ int create_elf_file(const char* filename) {
 }
 
 // 读取 ELF 文件并进行解析
-void read_elf_file(const char *filename, struct elf *elf_info) {
+struct elf* init_elf(const char *filename, struct elf *elf_info) {
     int fd = open(filename, O_RDONLY);
     if (fd == -1) {
         perror("Failed to open file");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     // 读取 ELF 文件头
     if (pread(fd, &elf_info->header, sizeof(elf_info->header), 0) != sizeof(elf_info->header)) {
         perror("Failed to read ELF header");
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     // 检查 ELF 文件是否合法
@@ -180,7 +180,7 @@ void read_elf_file(const char *filename, struct elf *elf_info) {
         elf_info->header.e_ident[EI_MAG3] != ELFMAG3) {
         fprintf(stderr, "Not a valid ELF file\n");
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     // 读取程序头
@@ -188,13 +188,13 @@ void read_elf_file(const char *filename, struct elf *elf_info) {
     if (elf_info->phdrs == NULL) {
         perror("Failed to allocate memory for program headers");
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
     if (pread(fd, elf_info->phdrs, elf_info->header.e_phnum * sizeof(Elf64_Phdr), elf_info->header.e_phoff) != elf_info->header.e_phnum * sizeof(Elf64_Phdr)) {
         perror("Failed to read program headers");
         free(elf_info->phdrs);
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     // 读取节头
@@ -203,14 +203,14 @@ void read_elf_file(const char *filename, struct elf *elf_info) {
         perror("Failed to allocate memory for section headers");
         free(elf_info->phdrs);
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
     if (pread(fd, elf_info->shdrs, elf_info->header.e_shnum * sizeof(Elf64_Shdr), elf_info->header.e_shoff) != elf_info->header.e_shnum * sizeof(Elf64_Shdr)) {
         perror("Failed to read section headers");
         free(elf_info->shdrs);
         free(elf_info->phdrs);
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     // 读取节头字符串表
@@ -220,7 +220,7 @@ void read_elf_file(const char *filename, struct elf *elf_info) {
         free(elf_info->shdrs);
         free(elf_info->phdrs);
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
     if (pread(fd, elf_info->shstrtab, elf_info->shdrs[elf_info->header.e_shstrndx].sh_size, elf_info->shdrs[elf_info->header.e_shstrndx].sh_offset) != elf_info->shdrs[elf_info->header.e_shstrndx].sh_size) {
         perror("Failed to read section header string table");
@@ -228,10 +228,11 @@ void read_elf_file(const char *filename, struct elf *elf_info) {
         free(elf_info->shdrs);
         free(elf_info->phdrs);
         close(fd);
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     close(fd);
+    return elf_info;
 }
 
 // 释放 ELF 信息占用的内存
@@ -251,7 +252,13 @@ void free_elf_symbols(struct symbol* symbol) {
     }
 }
 
+// 从 ELF 文件中解析传入的 scn 符号表，函数符号表中的每个符号包含符号在文件中的相对地址和符号名，将函数符号存储在红黑树中
 struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *elf_info) {
+    if (!elf || !shdr || !elf_info) {
+        fprintf(stderr, "Invalid input parameters\n");
+        return NULL;
+    }
+
     Elf_Data *data = elf_getdata(elf_getscn(elf, shdr->sh_name), NULL);
     if (!data) {
         fprintf(stderr, "Failed to get section data: %s\n", elf_errmsg(-1));
@@ -264,12 +271,12 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *
         fprintf(stderr, "Memory allocation failed for symbols\n");
         return NULL;
     }
-    symbols->symbol_tree.rb_node = NULL; // 初始化红黑树根
+    symbols->symbol_tree.rb_node = NULL; // 初始化红黑树
 
     for (size_t i = 0; i < symbol_count; ++i) {
         GElf_Sym sym;
         if (gelf_getsym(data, i, &sym) != &sym) {
-            fprintf(stderr, "Failed to get symbol: %s\n", elf_errmsg(-1));
+            fprintf(stderr, "Failed to get symbol at index %zu: %s\n", i, elf_errmsg(-1));
             continue;
         }
 
@@ -283,31 +290,37 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *
             uint64_t sym_address = sym.st_value;
             for (int j = 0; j < elf_info->header.e_phnum; ++j) {
                 Elf64_Phdr *phdr = &elf_info->phdrs[j];
-                if (phdr->p_type == PT_LOAD && 
-                    sym_address >= phdr->p_vaddr && 
+                if (phdr->p_type == PT_LOAD &&
+                    sym_address >= phdr->p_vaddr &&
                     sym_address < phdr->p_vaddr + phdr->p_memsz) {
                     sym_address = sym.st_value - phdr->p_vaddr + phdr->p_offset;
                     break;
                 }
             }
 
-            // 检查红黑树中是否已有相同的符号
+            // 检查红黑树中是否有相同的符号
             if (rb_find_node(&symbols->symbol_tree, name)) {
                 continue;
             }
 
             struct symbol* new_sym = malloc(sizeof(struct symbol));
             if (!new_sym) {
-                fprintf(stderr, "Memory allocation failed\n");
-                free_elf_symbols(new_sym);
+                fprintf(stderr, "Memory allocation failed for symbol\n");
+                free_elf_symbols(symbols);
                 return NULL;
             }
 
             new_sym->name = strdup(name);
+            if (!new_sym->name) {
+                fprintf(stderr, "Memory allocation failed for symbol name\n");
+                free(new_sym);
+                free_elf_symbols(symbols);
+                return NULL;
+            }
             new_sym->start_addr = sym_address;
             new_sym->size = sym.st_size;
 
-            // 插入到红黑树中
+            // 插入红黑树
             rb_insert_symbol(&symbols->symbol_tree, new_sym);
         }
     }
@@ -315,6 +328,7 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *
     return symbols;
 }
 
+/*
 void merge_symbol_trees(struct rb_root *dst, struct rb_root *src) {
     struct rb_node *node = rb_first(src);
     while (node) {
@@ -357,8 +371,42 @@ void merge_symbol_trees(struct rb_root *dst, struct rb_root *src) {
         }
     }
 }
+*/
 
-struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *elf_info) {
+// 查找缓存中的 ELF 符号
+struct elf_symbols* find_in_cache(const char* filename) {
+    struct elf_cache_entry* entry = cache.head;
+    while (entry) {
+        if (strcmp(entry->filename, filename) == 0) {
+            return entry->symbols;
+        }
+        entry = entry->next;
+    }
+    return NULL;
+}
+
+// 将 ELF 符号添加到缓存
+void add_to_cache(const char* filename, struct elf_symbols* symbols) {
+    struct elf_cache_entry* entry = malloc(sizeof(struct elf_cache_entry));
+    if (!entry) {
+        fprintf(stderr, "Failed to allocate memory for cache entry\n");
+        return;
+    }
+    entry->filename = strdup(filename);
+    entry->symbols = symbols;
+    entry->next = cache.head;
+    cache.head = entry;
+}
+
+// 获取 ELF 文件的符号
+struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf* elf_info) {
+    // 先查找缓存
+    struct elf_symbols* cached_symbols = find_in_cache(filename);
+    if (cached_symbols) {
+        elf_info->syms = cached_symbols;
+        return cached_symbols;
+    }
+
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
         fprintf(stderr, "Failed to open file: %s\n", filename);
@@ -383,7 +431,10 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
     }
 
     Elf_Scn *scn = NULL;
+    Elf_Scn *symtab_scn = NULL;
+    Elf_Scn *dynsym_scn = NULL;
 
+    // 第一轮遍历记录.symtab和.dynsym节的位置
     while ((scn = elf_nextscn(elf, scn)) != NULL) {
         GElf_Shdr shdr;
         if (gelf_getshdr(scn, &shdr) != &shdr) {
@@ -391,29 +442,44 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf_info *
             continue;
         }
 
-        // 选择合适的符号表，可以根据需要保留一个或两个
-        struct elf_symbols* symbols = NULL;
         if (shdr.sh_type == SHT_SYMTAB) {
-            symbols = process_symbol_table(elf, scn, elf_info);
+            symtab_scn = scn;
         } else if (shdr.sh_type == SHT_DYNSYM) {
-            symbols = process_dynamic_symbol_table(elf, scn, elf_info);// TODO 符号表覆盖
+            dynsym_scn = scn;
         }
+    }
 
-        // 如果只需要一个符号表，则在此处跳出循环
-        if (symbols) {
-            if (!final_symbols) {
-                final_symbols = symbols;
-            } else {
-                // 这里可以选择直接返回或者处理其他符号表
-                free_symbols(symbols);
-                break; // 已找到所需符号表，不需要继续
-            }
-        }
+    // 判断并处理符号表
+    if (symtab_scn) {
+        final_symbols = process_symbol_table(elf, symtab_scn, elf_info);
+    } else if (dynsym_scn) {
+        final_symbols = process_symbol_table(elf, dynsym_scn, elf_info);
     }
 
     elf_end(elf);
     close(fd);
+
+    // 将结果添加到缓存
+    if (final_symbols) {
+        add_to_cache(filename, final_symbols);
+    }
+
+    elf_info->syms = final_symbols;
     return final_symbols;
+}
+
+// 清理缓存
+void clear_cache() {
+    struct elf_cache_entry* entry = cache.head;
+    while (entry) {
+        struct elf_cache_entry* next = entry->next;
+        free(entry->filename);
+        free(entry->symbols->symbols);
+        free(entry->symbols);
+        free(entry);
+        entry = next;
+    }
+    cache.head = NULL;
 }
 
 // 检查进程是否需要清理，并执行清理操作
@@ -502,27 +568,25 @@ void parse_process_maps(struct process* proc) {
 struct elf *elf_table[HASHTABLE_SIZE];
 
 // 更新 ELF 引用计数
-void update_elf_ref_count(const char *filename, int count) {                        
-    unsigned int hash_value = hash(filename);
+struct elf* upsert_elf(const char *filename) {                        
+    unsigned int hash_value = hash(filename); // TODO 传参filename应该是elf—k
     struct elf *elf = elf_table[hash_value];
     
     if (elf) {
-        elf->ref_count += count;
-        if (elf->ref_count <= 0) {
-            free_elf_info(elf);
-            elf_table[hash_value] = NULL; // 从表中移除
-        }
-    } else if (count > 0) {
-        // ELF 对象首次被引用，加载并初始化 ELF 对象
-        elf = malloc(sizeof(struct elf));
-        if (!elf) {
-            perror("Failed to allocate memory for ELF");
-            exit(EXIT_FAILURE);
-        }
-        read_elf_file(filename, elf);
-        elf->ref_count = count;
-        elf_table[hash_value] = elf;
+        elf->ref_count += 1;
+        return elf;
     }
+    // ELF 对象首次被引用，加载并初始化 ELF 对象
+    elf = malloc(sizeof(struct elf));
+    if (!elf) {
+        perror("Failed to allocate memory for ELF");
+        exit(EXIT_FAILURE);
+    }
+    init_elf(filename, elf);
+    get_elf_func_symbols(filename, elf);
+    elf->ref_count = 1;
+    elf_table[hash_value] = elf;
+    return elf;
 }
 
 void start_cleanup_timer() {
