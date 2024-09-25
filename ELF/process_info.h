@@ -61,9 +61,24 @@ struct symbol {
 
 // ELF 符号红黑树管理结构体
 struct elf_symbols {
+    size_t count;
+    GElf_Sym* symbols;
     int symbol_count;            // 符号数量
     struct rb_root symbol_tree;  // 符号红黑树，以符号的首地址为K struct symbol作为V
 };
+
+// 缓存结构
+struct elf_cache_entry {
+    char* filename;
+    struct elf_symbols* symbols;
+    struct elf_cache_entry* next;
+};
+
+struct elf_cache {
+    struct elf_cache_entry* head;
+};
+
+struct elf_cache cache = {NULL};
 
 // 定义 ELF 文件结构体，用于管理 ELF 文件及其符号
 // 合并了 elf_info 和 elf 结构，避免冗余
@@ -76,7 +91,7 @@ struct elf {
     Elf64_Shdr *shdrs;                // 段头表
     char *shstrtab;                   // 段名字符串表
     int ref_count;                    // ELF 文件的引用计数
-    struct rb_root_cached symbol_tree; // 带左最节点缓存的红黑树，用于管理 ELF 符号
+    struct elf_symbols* syms;
 };
 
 // 描述 ELF 哈希冲突情况下的 ELF 节点
