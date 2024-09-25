@@ -206,6 +206,7 @@ static struct symbol* find_symbol_from_elf(Elf* elf, uint64_t address) {
     return NULL; // 符号未找到
 }
 
+/*
 // 查找地址对应的符号名称
 struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address) {
     struct rb_node* node = proc->vma_tree.rb_node; // 从 VMA 树的根节点开始
@@ -247,6 +248,7 @@ struct symbol* find_symbol_name_from_vma(struct process* proc, uint64_t address)
     }
     return NULL; // VMA 中未找到地址
 }
+*/
 
 // 打印使用说明
 void print_usage(const char* progname) {
@@ -302,10 +304,52 @@ struct elf* get_elf(struct system_info* sys_info, uint64_t file_hash, const char
     return elf_file;
 }
 
+int compare_symbols(const void *a, const void *b) {
+    struct symbol *sym_a = (struct symbol *)a;
+    struct symbol *sym_b = (struct symbol *)b;
+
+    if (sym_a->start_addr < sym_b->start_addr) return -1;
+    if (sym_a->start_addr > sym_b->start_addr) return 1;
+    return 0;
+}
+
+const struct symbol* binary_search_symbol(const struct symbol* symbols, size_t count, uint64_t addr) {
+    size_t left = 0;
+    size_t right = count;
+
+    while (left < right) {
+        size_t mid = left + (right - left) / 2;
+        const struct symbol *sym = &symbols[mid];
+
+        if (addr < sym->start_addr) {
+            right = mid;
+        } else if (addr >= sym->start_addr + sym->size) {
+            left = mid + 1;
+        } else {
+            return sym;
+        }
+    }
+    return NULL;
+}
+
+// 查找符号名称
+const char* find_symbol_name_from_elf(struct elf* elf, uint64_t relative_address) {
+    if (!elf || !elf->syms || elf->syms->symbol_count == 0) {
+        return NULL;
+    }
+
+    const struct symbol *sym = binary_search_symbol(elf->syms->symbols, elf->syms->symbol_count, relative_address);
+    if (sym != NULL) {
+        return sym->name;
+    } else {
+        return NULL;
+    }
+}
+
 // 获取符号名称
-const char* get_symbol_name(struct elf* elf_file, uint64_t relative_address) {
-    struct elf_symbols* elf_syms = (struct elf_symbols*)&elf_file->symbol_tree;
-    return find_symbol_name_from_elf(elf_syms, relative_address);
+const char* get_symbol_name(struct elf* elf, uint64_t relative_address) {
+
+    return find_symbol_name_from_elf(elf, relative_address);
 }
 
 // 释放系统资源
@@ -362,30 +406,21 @@ int main(int argc, char* argv[]) {
     printf("Relative address in ELF: 0x%lx\n", relative_address);
 
     // 更新 ELF 引用计数（增加引用）
-    update_elf_ref_count(vma_info->region_name, 1);
-
-    // 获取 ELF 文件
-    struct elf* elf_file = retrieve_elf(&system_info, vma_info->file_hash, vma_info->region_name);
-    if (!elf_file) {
-        printf("Error retrieving ELF file.\n");
-        update_elf_ref_count(vma_info->region_name, -1); // 失败时减少引用计数
-        cleanup_system(&system_info);
-        return 1;
-    }
-
+    struct elf* elf = upsert_elf(vma_info->region_name);
+    
     // 获取符号名称
-    const char* symbol_name = retrieve_symbol_name(elf_file, relative_address);
+    const char* symbol_name = get_symbol_name(elf, relative_address);
     if (symbol_name) {
         printf("Function name: %s\n", symbol_name);
     } else {
         printf("No function name found\n");
     }
-
-    // 更新 ELF 引用计数（减少引用）
-    update_elf_ref_count(vma_info->region_name, -1);
-
+    
     // 清理系统资源
     cleanup_system(&system_info);
+
+    // 清理符号表
+    clear_cache();
 
     return 0;
 }
