@@ -434,7 +434,10 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf* elf_i
     Elf_Scn *symtab_scn = NULL;
     Elf_Scn *dynsym_scn = NULL;
 
-    // 第一轮遍历记录.symtab和.dynsym节的位置
+    // 第一轮遍历记录 .symtab 和.dynsym 节的位置
+    // 判断是否存在 .symtab 或 .dynsym
+    // 如果存在 .symtab ,则处理 .symtab 符号表
+    // 如果不存在,则处理 .dynsym 符号表 (先完成一遍遍历)
     while ((scn = elf_nextscn(elf, scn)) != NULL) {
         GElf_Shdr shdr;
         if (gelf_getshdr(scn, &shdr) != &shdr) {
