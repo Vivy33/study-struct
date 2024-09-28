@@ -3,17 +3,21 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <unistd.h>
+#include <unistd.h> // For access() function
 #include <string.h>
 #include <dirent.h>  // For DIR, struct dirent
 #include <sys/stat.h> // For struct stat
-#include <unistd.h> // For access() function
+#include <sys/types.h>
+#include <errno.h>
+#include <ctype.h>
 
 #include "process_info.h"
 #include "rbtree.h"
 
 #define ELF_MAGIC 0x464c457f
 #define SECTION_NAME ".text"
+
+struct elf_cache g_cache;
 
 // 哈希函数
 unsigned int hash(const char *str) {
@@ -23,10 +27,6 @@ unsigned int hash(const char *str) {
     }
     return hash % HASHTABLE_SIZE;
 }
-
-// 全局变量，用于管理 ELF 文件引用计数
-static int elf_ref_count = 0;
-static const char *current_elf_path = NULL;
 
 // 根据地址查找符号名
 const char* get_symbol_name_by_address(Elf *elf, struct elf *elf_info, uint64_t address) {
@@ -46,6 +46,7 @@ const char* get_symbol_name_by_address(Elf *elf, struct elf *elf_info, uint64_t 
     return NULL;
 }
 
+#if 0
 // 创建 ELF 文件并初始化头和节头
 int create_elf_file(const char* filename) {
     // 打开文件
@@ -118,7 +119,7 @@ int create_elf_file(const char* filename) {
         close(fd);
         return -1;
     }
-    if (elf32_update(elf, ELF_C_WRITE) < 0) {
+    if (elf_update(elf, ELF_C_WRITE) < 0) {
         fprintf(stderr, "Failed to write section header: %s\n", elf_errmsg(-1));
         elf_end(elf);
         close(fd);
@@ -157,6 +158,7 @@ int create_elf_file(const char* filename) {
     close(fd);
     return 0;
 }
+#endif
 
 // 读取 ELF 文件并进行解析
 struct elf* init_elf(const char *filename, struct elf *elf_info) {
@@ -184,13 +186,13 @@ struct elf* init_elf(const char *filename, struct elf *elf_info) {
     }
 
     // 读取程序头
-    elf_info->phdrs = malloc(elf_info->header.e_phnum * sizeof(Elf64_Phdr));
+    elf_info->phdrs = (Elf64_Phdr*)malloc(elf_info->header.e_phnum * sizeof(Elf64_Phdr));
     if (elf_info->phdrs == NULL) {
         perror("Failed to allocate memory for program headers");
         close(fd);
         return NULL;
     }
-    if (pread(fd, elf_info->phdrs, elf_info->header.e_phnum * sizeof(Elf64_Phdr), elf_info->header.e_phoff) != elf_info->header.e_phnum * sizeof(Elf64_Phdr)) {
+    if (pread(fd, elf_info->phdrs, elf_info->header.e_phnum * sizeof(Elf64_Phdr), elf_info->header.e_phoff) != (ssize_t)(elf_info->header.e_phnum * sizeof(Elf64_Phdr))) {
         perror("Failed to read program headers");
         free(elf_info->phdrs);
         close(fd);
@@ -198,14 +200,14 @@ struct elf* init_elf(const char *filename, struct elf *elf_info) {
     }
 
     // 读取节头
-    elf_info->shdrs = malloc(elf_info->header.e_shnum * sizeof(Elf64_Shdr));
+    elf_info->shdrs = (Elf64_Shdr*)malloc(elf_info->header.e_shnum * sizeof(Elf64_Shdr));
     if (elf_info->shdrs == NULL) {
         perror("Failed to allocate memory for section headers");
         free(elf_info->phdrs);
         close(fd);
         return NULL;
     }
-    if (pread(fd, elf_info->shdrs, elf_info->header.e_shnum * sizeof(Elf64_Shdr), elf_info->header.e_shoff) != elf_info->header.e_shnum * sizeof(Elf64_Shdr)) {
+    if (pread(fd, elf_info->shdrs, elf_info->header.e_shnum * sizeof(Elf64_Shdr), elf_info->header.e_shoff) != (ssize_t)(elf_info->header.e_shnum * sizeof(Elf64_Shdr))) {
         perror("Failed to read section headers");
         free(elf_info->shdrs);
         free(elf_info->phdrs);
@@ -214,7 +216,7 @@ struct elf* init_elf(const char *filename, struct elf *elf_info) {
     }
 
     // 读取节头字符串表
-    elf_info->shstrtab = malloc(elf_info->shdrs[elf_info->header.e_shstrndx].sh_size);
+    elf_info->shstrtab = (char*)malloc(elf_info->shdrs[elf_info->header.e_shstrndx].sh_size);
     if (elf_info->shstrtab == NULL) {
         perror("Failed to allocate memory for section header string table");
         free(elf_info->shdrs);
@@ -222,7 +224,7 @@ struct elf* init_elf(const char *filename, struct elf *elf_info) {
         close(fd);
         return NULL;
     }
-    if (pread(fd, elf_info->shstrtab, elf_info->shdrs[elf_info->header.e_shstrndx].sh_size, elf_info->shdrs[elf_info->header.e_shstrndx].sh_offset) != elf_info->shdrs[elf_info->header.e_shstrndx].sh_size) {
+    if (pread(fd, elf_info->shstrtab, elf_info->shdrs[elf_info->header.e_shstrndx].sh_size, elf_info->shdrs[elf_info->header.e_shstrndx].sh_offset) != (ssize_t)(elf_info->shdrs[elf_info->header.e_shstrndx].sh_size)) {
         perror("Failed to read section header string table");
         free(elf_info->shstrtab);
         free(elf_info->shdrs);
@@ -244,14 +246,6 @@ void free_elf_info(struct elf *elf_info) {
     }
 }
 
-// 释放符号节点
-void free_elf_symbols(struct symbol* symbol) {
-    if (symbol) {
-        free(symbol->name);
-        free(symbol);
-    }
-}
-
 // 从 ELF 文件中解析传入的 scn 符号表，函数符号表中的每个符号包含符号在文件中的相对地址和符号名，将函数符号存储在红黑树中
 struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *elf_info) {
     if (!elf || !shdr || !elf_info) {
@@ -266,7 +260,7 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *
     }
 
     size_t symbol_count = shdr->sh_size / shdr->sh_entsize;
-    struct elf_symbols* symbols = malloc(sizeof(struct elf_symbols));
+    struct elf_symbols* symbols = (struct elf_symbols*)malloc(sizeof(struct elf_symbols));
     if (!symbols) {
         fprintf(stderr, "Memory allocation failed for symbols\n");
         return NULL;
@@ -297,16 +291,15 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *
                     break;
                 }
             }
-
+#if 0
             // 检查红黑树中是否有相同的符号
             if (rb_find_node(&symbols->symbol_tree, name)) {
                 continue;
             }
-
-            struct symbol* new_sym = malloc(sizeof(struct symbol));
+#endif
+            struct symbol* new_sym = (struct symbol*)malloc(sizeof(struct symbol));
             if (!new_sym) {
                 fprintf(stderr, "Memory allocation failed for symbol\n");
-                free_elf_symbols(symbols);
                 return NULL;
             }
 
@@ -314,14 +307,13 @@ struct elf_symbols* process_symbol_table(Elf *elf, GElf_Shdr *shdr, struct elf *
             if (!new_sym->name) {
                 fprintf(stderr, "Memory allocation failed for symbol name\n");
                 free(new_sym);
-                free_elf_symbols(symbols);
                 return NULL;
             }
             new_sym->start_addr = sym_address;
             new_sym->size = sym.st_size;
 
             // 插入红黑树
-            rb_insert_symbol(&symbols->symbol_tree, new_sym);
+            rb_insert_color(&new_sym->symbol_node, &symbols->symbol_tree);
         }
     }
 
@@ -375,7 +367,7 @@ void merge_symbol_trees(struct rb_root *dst, struct rb_root *src) {
 
 // 查找缓存中的 ELF 符号
 struct elf_symbols* find_in_cache(const char* filename) {
-    struct elf_cache_entry* entry = cache.head;
+    struct elf_cache_entry* entry = g_cache.head;
     while (entry) {
         if (strcmp(entry->filename, filename) == 0) {
             return entry->symbols;
@@ -387,15 +379,15 @@ struct elf_symbols* find_in_cache(const char* filename) {
 
 // 将 ELF 符号添加到缓存
 void add_to_cache(const char* filename, struct elf_symbols* symbols) {
-    struct elf_cache_entry* entry = malloc(sizeof(struct elf_cache_entry));
+    struct elf_cache_entry* entry = (struct elf_cache_entry*)malloc(sizeof(struct elf_cache_entry));
     if (!entry) {
         fprintf(stderr, "Failed to allocate memory for cache entry\n");
         return;
     }
     entry->filename = strdup(filename);
     entry->symbols = symbols;
-    entry->next = cache.head;
-    cache.head = entry;
+    entry->next = g_cache.head;
+    g_cache.head = entry;
 }
 
 // 获取 ELF 文件的符号
@@ -431,8 +423,10 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf* elf_i
     }
 
     Elf_Scn *scn = NULL;
-    Elf_Scn *symtab_scn = NULL;
-    Elf_Scn *dynsym_scn = NULL;
+    GElf_Shdr symtab_shdr;
+    GElf_Shdr dynsym_shdr;
+    int has_symtab = 0;
+    int has_dynsym = 0;
 
     // 第一轮遍历记录 .symtab 和.dynsym 节的位置
     // 判断是否存在 .symtab 或 .dynsym
@@ -446,17 +440,19 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf* elf_i
         }
 
         if (shdr.sh_type == SHT_SYMTAB) {
-            symtab_scn = scn;
+            memcpy(&symtab_shdr, &shdr, sizeof(shdr));
+            has_symtab = 1;
         } else if (shdr.sh_type == SHT_DYNSYM) {
-            dynsym_scn = scn;
+            memcpy(&dynsym_shdr, &shdr, sizeof(shdr));
+            has_dynsym = 1;
         }
     }
 
     // 判断并处理符号表
-    if (symtab_scn) {
-        final_symbols = process_symbol_table(elf, symtab_scn, elf_info);
-    } else if (dynsym_scn) {
-        final_symbols = process_symbol_table(elf, dynsym_scn, elf_info);
+    if (has_symtab) {
+        final_symbols = process_symbol_table(elf, &symtab_shdr, elf_info);
+    } else if (has_dynsym) {
+        final_symbols = process_symbol_table(elf, &dynsym_shdr, elf_info);
     }
 
     elf_end(elf);
@@ -472,35 +468,121 @@ struct elf_symbols* get_elf_func_symbols(const char* filename, struct elf* elf_i
 }
 
 // 清理缓存
-void clear_cache() {
-    struct elf_cache_entry* entry = cache.head;
+void clear_symbol_gcache() {
+    struct elf_cache_entry* entry = g_cache.head;
     while (entry) {
         struct elf_cache_entry* next = entry->next;
         free(entry->filename);
-        free(entry->symbols->symbols);
         free(entry->symbols);
         free(entry);
         entry = next;
     }
-    cache.head = NULL;
+    g_cache.head = NULL;
+}
+
+// 从 /proc/[pid]/stat 获取进程的启动时间
+long long get_process_start_time(pid_t pid) {
+    char path[256];
+    FILE *file;
+    long long start_time = -1;
+    
+    // 构建 /proc/[pid]/stat 的路径
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    
+    // 打开 /proc/[pid]/stat 文件
+    file = fopen(path, "r");
+    if (file == NULL) {
+        perror("fopen");
+        return -1;
+    }
+
+    // 读取第 22 个字段（启动时间）
+    int i;
+    char buffer[4096];
+    if (fgets(buffer, sizeof(buffer), file) != NULL) {
+        char *token = strtok(buffer, " ");
+        for (i = 1; i < 22; i++) {
+            token = strtok(NULL, " ");
+        }
+        if (token != NULL) {
+            start_time = atoll(token);
+        }
+    }
+
+    fclose(file);
+    return start_time;
+}
+
+int is_pid_reused(pid_t pid, long long original_start_time) {
+    long long current_start_time;
+
+    // 获取当前进程的启动时间
+    current_start_time = get_process_start_time(pid);
+    if (current_start_time == -1) {
+        // 获取启动时间失败，可能是进程不存在
+        if (errno == ENOENT) {
+            return 1;
+        } else {
+            // 处理其他错误
+            perror("get_process_start_time");
+            return -1;
+        }
+    }
+
+    // 比较原始启动时间和当前启动时间
+    if (current_start_time != original_start_time) {
+        // 启动时间不同，PID 已被重新分配
+        return 1;
+    }
+
+    // 启动时间相同，PID 未被重新分配
+    return 0;
 }
 
 // 检查进程是否需要清理，并执行清理操作
 void cleanup_process(int pid) {
+    // 获取进程的启动时间
+    long long original_start_time = get_process_start_time(pid);
+    if (original_start_time == -1) {
+        // 无法获取启动时间，可能是进程已退出
+        printf("Cleaning up process data for PID: %d\n", pid);
+        // 清理操作代码
+        return;
+    }
+
+    // 检查进程目录是否存在
     char path[256];
     snprintf(path, sizeof(path), "/proc/%d", pid);
 
     struct stat stat_buf;
     if (stat(path, &stat_buf) == -1) {
         // 进程目录不存在，说明进程已退出，需要清理
-        cleanup_process(pid);
+        printf("Cleaning up process data for PID: %d\n", pid);
+        // 清理操作代码
+        return;
     } else {
         // 检查start time，判断是否是同一个进程
-        if (is_pid_reused(pid, &stat_buf)) {
+        if (is_pid_reused(pid, original_start_time)) {
             // 如果PID被复用了，清理旧的进程数据
-            cleanup_process(pid);
+            printf("PID %d reused, cleaning up old process data\n", pid);
+            // 清理操作代码
         }
     }
+}
+
+int is_numer(const char *str) {
+    if (str == NULL || *str == '\0') {
+        return 0;
+    }
+
+    while (*str) {
+        if (!isdigit(*str)) {
+            return 0;
+        }
+        str++;
+    }
+
+    return 1;
 }
 
 // 扫描 /proc 目录以找到所有正在运行的进程
@@ -509,70 +591,36 @@ void scan_processes() {
     if (!dir) {
         perror("Failed to open /proc directory");
         return;
-    }                   
+    }
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        int pid = atoi(entry->d_name); // atoi 将字符串转换为整数
-        if (pid > 0) {
-            cleanup_process_if_needed(pid);
+        // 检查名称是否为数字，即 PID
+        if (is_numer(entry->d_name)) {
+            int pid = atoi(entry->d_name);
+            if (pid > 0) {
+                cleanup_process(pid);
+            }
         }
     }
 
     closedir(dir);
 }
 
+
 // 更新 ELF 文件的引用计数
 void update_elf_references(const char *path) {
     if (strstr(path, ".so") || strstr(path, ".exe")) {
         // 是共享对象或可执行文件，更新ELF对象的引用计数
-        update_elf_ref_count(path, 1);
+        upsert_elf(path);
     }
-}
-
-// 解析进程的内存映射文件  /proc/[pid]/maps
-void parse_process_maps(struct process* proc) {
-    char path[256];
-    snprintf(path, sizeof(path), "/proc/%d/maps", proc->pid);
-    
-    FILE* file = fopen(path, "r");
-    if (!file) {
-        perror("Failed to open maps file");
-        return;
-    }
-
-    char line[256];
-    while (fgets(line, sizeof(line), file)) {
-        void *start_addr, *end_addr;
-        char perms[5], dev[6], mapname[256] = "";
-        unsigned long offset;
-        int inode;
-
-        // 解析每一行，mapname 可能为空（匿名内存区域）
-        int items_read = sscanf(line, "%p-%p %4s %lx %5s %d %255s", &start_addr, &end_addr, perms, &offset, dev, &inode, mapname);
-
-        if (items_read < 6) {
-            // 如果读取的字段少于6个，表示解析出错或者行格式不对
-            continue;
-        }
-
-        if (strlen(mapname) > 0) {
-            // 如果 mapname 不为空，表示这是一个映射到文件的内存区域
-            update_elf_references(mapname);
-        } else {
-            // 处理匿名内存（没有文件路径的内存映射）
-            printf("Anonymous memory region: %p-%p\n", start_addr, end_addr);
-        }
-    }
-
-    fclose(file);
 }
 
 struct elf *elf_table[HASHTABLE_SIZE];
 
 // 更新 ELF 引用计数
 struct elf* upsert_elf(const char *filename) {                        
-    unsigned int hash_value = hash(filename); // TODO 传参filename应该是elf—k
+    unsigned int hash_value = hash(filename);
     struct elf *elf = elf_table[hash_value];
     
     if (elf) {
@@ -580,7 +628,7 @@ struct elf* upsert_elf(const char *filename) {
         return elf;
     }
     // ELF 对象首次被引用，加载并初始化 ELF 对象
-    elf = malloc(sizeof(struct elf));
+    elf = (struct elf*)malloc(sizeof(struct elf));
     if (!elf) {
         perror("Failed to allocate memory for ELF");
         exit(EXIT_FAILURE);
@@ -594,7 +642,7 @@ struct elf* upsert_elf(const char *filename) {
 
 void start_cleanup_timer() {
     while (1) {
-        scan_processes_and_cleanup();
+        scan_processes();
         sleep(30); // 每30秒执行一次
     }
 }
