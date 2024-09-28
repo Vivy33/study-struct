@@ -74,6 +74,9 @@ int main() {
 
     ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
     close(fd);
+
+    // 扫描和清理进程
+    scan_processes();
     
     return 0;
 }
