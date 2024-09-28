@@ -62,7 +62,6 @@ struct symbol {
 // ELF 符号红黑树管理结构体
 struct elf_symbols {
     size_t count;
-    GElf_Sym* symbols;
     int symbol_count;            // 符号数量
     struct rb_root symbol_tree;  // 符号红黑树，以符号的首地址为K struct symbol作为V
 };
@@ -78,7 +77,7 @@ struct elf_cache {
     struct elf_cache_entry* head;
 };
 
-struct elf_cache cache = {NULL};
+extern struct elf_cache g_cache;
 
 // 定义 ELF 文件结构体，用于管理 ELF 文件及其符号
 // 合并了 elf_info 和 elf 结构，避免冗余
@@ -111,13 +110,12 @@ struct system_info {
     struct elf_hash_table* elfs;       // ELF 哈希表
 };
 
-struct process* read_process_info(struct system_info* system_info, int pid);
+struct process* get_process_info(struct system_info* system_info, int pid);
 int get_process_vma_info(struct system_info* system_info, int pid, uint64_t addr, struct vma* out_vma);
-void update_elf_ref_count(const char *path, int increment);
-void print_vma_info(const struct vma* vma_info);
-void print_elf_header(const Elf64_Ehdr *header);
-void print_program_headers(const Elf64_Phdr *phdrs, uint16_t phnum);
-void print_section_headers(const Elf64_Shdr *shdrs, uint16_t shnum);
+struct elf* upsert_elf(const char *filename);
 void find_symbol_by_address(int fd, Elf64_Shdr *shdrs, uint16_t shnum, char *shstrtab, uint64_t address);
+unsigned int parse_process_maps(struct process* proc);
+void print_vma_info(const struct vma* vma_info);
+int is_pid_reused(pid_t pid, long long original_start_time);
 
 #endif
