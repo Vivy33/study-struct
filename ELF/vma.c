@@ -24,17 +24,17 @@ unsigned int parse_process_maps(struct process* proc) {
     proc->vma_tree = RB_ROOT; // 初始化红黑树
 
     while (fgets(line, sizeof(line), file)) {
-        struct vma* vma = malloc(sizeof(struct vma));
+        struct vma* vma = (struct vma*)malloc(sizeof(struct vma));
         if (!vma) {
             perror("Failed to allocate memory for VMA");
             fclose(file);
             return 1;
         }
         char perm[5] = {0};
-        char name[256] = {0};
+        char region_name[256] = {0};
 
         sscanf(line, "%lx-%lx %4s %lx %*s %*d %255s",
-               &vma->start, &vma->end, perm, &vma->offset, name);
+               &vma->start, &vma->end, perm, &vma->offset, region_name);
 
         if (strchr(perm, 'r')) {
             flags |= READ;
@@ -47,22 +47,22 @@ unsigned int parse_process_maps(struct process* proc) {
         }
 
         vma->flags = flags;
-        vma->name = strdup(name);
+        vma->region_name = strdup(region_name);
 
         // 将VMA插入红黑树中
-        struct rb_node **new = &(proc->vma_tree.rb_node), *parent = NULL;
-        while (*new) {
-            struct vma *this = rb_entry(*new, struct vma, vma_node);
+        struct rb_node **new_node = &(proc->vma_tree.rb_node), *parent = NULL;
+        while (*new_node) {
+            struct vma *self = rb_entry(*new_node, struct vma, vma_node);
 
-            parent = *new;
-            if (vma->start < this->start)
-                new = &((*new)->rb_left);
+            parent = *new_node;
+            if (vma->start < self->start)
+                new_node = &((*new_node)->rb_left);
             else
-                new = &((*new)->rb_right);
+                new_node = &((*new_node)->rb_right);
         }
 
         // 添加红黑树节点
-        rb_link_node(&vma->vma_node, parent, new);
+        rb_link_node(&vma->vma_node, parent, new_node);
         rb_insert_color(&vma->vma_node, &proc->vma_tree);
         proc->num_vmas++;
     }
@@ -74,5 +74,5 @@ unsigned int parse_process_maps(struct process* proc) {
 // 打印VMA信息
 void print_vma_info(const struct vma* vma_info) {
     printf("VMA Start: 0x%lx, End: 0x%lx, Offset: 0x%lx, Flags: %x, Name: %s\n",
-           vma_info->start, vma_info->end, vma_info->offset, vma_info->flags, vma_info->name);
+           vma_info->start, vma_info->end, vma_info->offset, vma_info->flags, vma_info->region_name);
 }
