@@ -3,8 +3,10 @@
 #include <string.h>
 #include <fcntl.h>
 
-#include "process_info.h"
 #include "rbtree.h"
+
+#include "process_info.h"
+#include "elf.h"
 
 // 哈希函数
 unsigned int hash(int pid) {
@@ -45,7 +47,7 @@ struct process* find_new_process(struct process_hash_table* process_table, int p
     }
 
     // 创建新的 process_node
-    struct process_node* new_node = malloc(sizeof(struct process_node));
+    struct process_node* new_node = (struct process_node*)malloc(sizeof(struct process_node));
     new_node->procs = new_proc;
     new_node->next = NULL;
 
@@ -90,20 +92,18 @@ struct elf* create_elf(struct elf_hash_table* elf_table, uint64_t file_hash, con
     }
 
     new_elf.file_hash = file_hash;
-    new_elf.elf_id = file_hash; // 在真实场景中，应使用 file_hash
+    new_elf.elf_id = strdup(filename); // 在真实场景中，应使用 file_hash
 
     // 解析 ELF 符号表
-    if (parse_elf_symbols(&new_elf)) {
+    if (get_elf_func_symbols(filename, &new_elf)) {
         fprintf(stderr, "无法解析 ELF 符号表 %s\n", filename);
-        free(new_elf.filename);
         return NULL;
     }
 
     // 创建新的 elf_node
-    struct elf_node* new_node = malloc(sizeof(struct elf_node));
+    struct elf_node* new_node = (struct elf_node*)malloc(sizeof(struct elf_node));
     if (!new_node) {
         fprintf(stderr, "无法为 elf_node 分配内存\n");
-        free(new_elf.filename);
         return NULL;
     }
 
@@ -147,9 +147,6 @@ char* get_elfname_from_vma(struct vma* vma) {
     return vma->region_name;
 }
 
-// 获取 ELF 文件的符号信息
-extern struct elf_symbol* get_elf_func_symbols(const char* filename);
-
 // 获取相对地址
 uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
     return real_addr - vma->start + vma->offset;
@@ -158,7 +155,6 @@ uint64_t get_relative_address(uint64_t real_addr, struct vma* vma) {
 // 查找符号名称的辅助函数
 static struct symbol* find_symbol_from_elf(Elf* elf, uint64_t address) {
     Elf_Scn *scn = NULL;
-    Elf64_Shdr shdr;
     GElf_Shdr gshdr;
 
     // 优先查找 .symtab 符号表
@@ -185,7 +181,7 @@ static struct symbol* find_symbol_from_elf(Elf* elf, uint64_t address) {
                 }
 
                 if (address >= symbol.st_value && address < symbol.st_value + symbol.st_size) {
-                    struct symbol* result = malloc(sizeof(struct symbol));
+                    struct symbol* result = (struct symbol*)malloc(sizeof(struct symbol));
                     if (!result) {
                         perror("Failed to allocate memory for symbol");
                         return NULL;
@@ -313,23 +309,21 @@ int compare_symbols(const void *a, const void *b) {
     return 0;
 }
 
-const struct symbol* binary_search_symbol(const struct symbol* symbols, size_t count, uint64_t addr) {
-    size_t left = 0;
-    size_t right = count;
+// rbtree 二分查找
+struct symbol* rb_search_symbol(struct rb_root *root, uint64_t addr) {
+    struct rb_node *node = root->rb_node; // 从红黑树根节点开始
 
-    while (left < right) {
-        size_t mid = left + (right - left) / 2;
-        const struct symbol *sym = &symbols[mid];
+    while (node) {
+        struct symbol *sym = rb_entry(node, struct symbol, symbol_node); // 获取当前节点对应的符号
 
-        if (addr < sym->start_addr) {
-            right = mid;
-        } else if (addr >= sym->start_addr + sym->size) {
-            left = mid + 1;
-        } else {
-            return sym;
-        }
+        if (addr < sym->start_addr) // 如果目标地址小于当前符号的起始地址
+            node = node->rb_left; // 移动到左子树
+        else if (addr >= sym->start_addr + sym->size) // 如果目标地址不在当前符号的范围内
+            node = node->rb_right; // 移动到右子树
+        else // 如果目标地址在当前符号的范围内
+            return sym; // 找到目标符号，返回
     }
-    return NULL;
+    return NULL; // 如果没有找到，返回NULL
 }
 
 // 查找符号名称
@@ -338,7 +332,7 @@ const char* find_symbol_name_from_elf(struct elf* elf, uint64_t relative_address
         return NULL;
     }
 
-    const struct symbol *sym = binary_search_symbol(elf->syms->symbols, elf->syms->symbol_count, relative_address);
+    const struct symbol *sym = rb_search_symbol(&elf->syms->symbol_tree, relative_address);
     if (sym != NULL) {
         return sym->name;
     } else {
@@ -352,6 +346,24 @@ const char* get_symbol_name(struct elf* elf, uint64_t relative_address) {
     return find_symbol_name_from_elf(elf, relative_address);
 }
 
+void free_process_list(struct process_hash_table *hash_table) {
+    // 遍历哈希表的每一个槽位
+    for (int i = 0; i < HASHTABLE_SIZE; i++) {
+        struct process_node* node = hash_table->nodes[i];
+        // 遍历每一个槽位中的链表，释放所有节点
+        while (node) {
+            struct process_node* temp = node;
+            node = node->next;
+            free(temp->procs.proc_name);   // 释放进程名称
+            free(temp->procs.cmdline);     // 释放命令行
+            free(temp->procs.exe_path);    // 释放可执行文件路径
+            // 注意: 如果 vma_tree 中有动态分配的资源，也需要在此释放
+            free(temp); // 释放进程节点
+        }
+    }
+    free(hash_table); // 释放哈希表结构
+}
+
 // 释放系统资源
 void cleanup_system(struct system_info* system_info) {
     // 释放 ELF 节点
@@ -363,8 +375,9 @@ void cleanup_system(struct system_info* system_info) {
             free(temp->elf_data.filename);
             free(temp);
         }
+        
     }
-
+    
     free_process_list(system_info->procs);
 }
 
@@ -385,14 +398,14 @@ int main(int argc, char* argv[]) {
     }
 
     // 获取进程信息
-    struct process* proc_info = get_process_info(pid);
+    struct process* proc_info = get_process(&system_info, pid);
     if (!proc_info) {
         cleanup_system(&system_info);
         return 1;
     }
 
     // 获取 VMA 信息
-    struct vma* vma_info = get_vma_info(proc_info, real_addr);
+    struct vma* vma_info = get_vma_from_process(proc_info, real_addr);
     if (!vma_info) {
         cleanup_system(&system_info);
         return 1;
@@ -420,7 +433,7 @@ int main(int argc, char* argv[]) {
     cleanup_system(&system_info);
 
     // 清理符号表
-    clear_cache();
+    clear_symbol_gcache();
 
     return 0;
 }
