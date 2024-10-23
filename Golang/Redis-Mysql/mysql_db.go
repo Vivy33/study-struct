@@ -32,28 +32,68 @@ func InitDB() (*sql.DB, error) {
 	return db, nil
 }
 
-// 插入数据到数据库
+// 插入数据到数据库，使用事务
 func InsertProcess(db *sql.DB, p *Process) (int64, error) {
-	query := "INSERT INTO Process (ProcName, Cmdline, ExePath, StartTime, NumVmas) VALUES (?, ?, ?, ?, ?)"
-	result, err := db.Exec(query, p.ProcName, p.Cmdline, p.ExePath, p.StartTime, p.NumVmas)
+	// 开始事务
+	tx, err := db.Begin()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("无法开始事务: %v", err)
 	}
+
+	// 插入数据
+	query := "INSERT INTO Process (ProcName, Cmdline, ExePath, StartTime, NumVmas) VALUES (?, ?, ?, ?, ?)"
+	result, err := tx.Exec(query, p.ProcName, p.Cmdline, p.ExePath, p.StartTime, p.NumVmas)
+	if err != nil {
+		tx.Rollback() // 出现错误则回滚事务
+		return 0, fmt.Errorf("插入失败: %v", err)
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("事务提交失败: %v", err)
+	}
+
 	return result.LastInsertId()
 }
 
-// 更新数据库中的数据
+// 更新数据库中的数据，使用事务
 func UpdateProcess(db *sql.DB, p *Process) error {
+	// 开始事务
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("无法开始事务: %v", err)
+	}
+
+	// 更新数据
 	query := "UPDATE Process SET ProcName = ?, Cmdline = ?, ExePath = ?, StartTime = ?, NumVmas = ? WHERE PID = ?"
-	_, err := db.Exec(query, p.ProcName, p.Cmdline, p.ExePath, p.StartTime, p.NumVmas, p.PID)
-	return err
+	_, err = tx.Exec(query, p.ProcName, p.Cmdline, p.ExePath, p.StartTime, p.NumVmas, p.PID)
+	if err != nil {
+		tx.Rollback() // 出现错误则回滚事务
+		return fmt.Errorf("更新失败: %v", err)
+	}
+
+	// 提交事务
+	return tx.Commit()
 }
 
-// 删除数据库中的数据
+// 删除数据库中的数据，使用事务
 func DeleteProcess(db *sql.DB, pid int) error {
+	// 开始事务
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("无法开始事务: %v", err)
+	}
+
+	// 删除数据
 	query := "DELETE FROM Process WHERE PID = ?"
-	_, err := db.Exec(query, pid)
-	return err
+	_, err = tx.Exec(query, pid)
+	if err != nil {
+		tx.Rollback() // 出现错误则回滚事务
+		return fmt.Errorf("删除失败: %v", err)
+	}
+
+	// 提交事务
+	return tx.Commit()
 }
 
 // 根据 PID 获取数据
