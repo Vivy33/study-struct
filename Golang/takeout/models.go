@@ -11,6 +11,15 @@ type User struct {
 	Address  string `json:"address"`
 }
 
+// Rider 表示骑手的数据结构
+type Rider struct {
+	User                // 内嵌 User 结构体，继承用户的基本字段
+	RiderID     int     `json:"rider_id"`     // 骑手ID，区分于 UserID
+	VehicleType string  `json:"vehicle_type"` // 骑手使用的交通工具类型
+	Rating      float64 `json:"rating"`       // 骑手的评分
+	Status      string  `json:"status"`       // 骑手状态（如在线、休息、离线）
+}
+
 // 商家结构体
 type Shop struct {
 	ShopID      int    `json:"shop_id"`
@@ -38,4 +47,13 @@ type Order struct {
 	Status     string    `json:"status"`
 	OrderTime  time.Time `json:"order_time"`
 	TotalPrice float64   `json:"total_price"`
+}
+
+// Message 表示一条群聊消息的结构体
+type Message struct {
+	ID        int       `json:"id"`        // 消息ID
+	GroupID   int       `json:"group_id"`  // 群组ID
+	SenderID  int       `json:"sender_id"` // 发送者ID
+	Content   string    `json:"content"`   // 消息内容
+	Timestamp time.Time `json:"timestamp"` // 消息时间戳
 }
