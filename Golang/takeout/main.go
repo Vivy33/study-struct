@@ -28,18 +28,51 @@ func init() {
 	}
 }
 
-// 注册用户并插入到数据库
-func RegisterUser(db *sql.DB, user *User) (int64, error) {
+// 用户注册
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var user User
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	// 检查用户名是否已存在
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", user.Username).Scan(&exists)
+	if err != nil {
+		http.Error(w, "用户名检查失败", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		http.Error(w, "用户名已存在，请选择其他用户名", http.StatusConflict)
+		return
+	}
+
+	// 插入用户数据
+	userID, err := insertUser(db, &user)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("用户注册失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	user.UserID = int(userID)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
+}
+
+// 插入用户到数据库
+func insertUser(db *sql.DB, user *User) (int64, error) {
 	query := "INSERT INTO users (username, password, phone, address) VALUES (?, ?, ?, ?)"
 	result, err := db.Exec(query, user.Username, user.Password, user.Phone, user.Address)
 	if err != nil {
-		return 0, fmt.Errorf("用户注册失败: %v", err)
+		return 0, fmt.Errorf("用户插入失败: %v", err)
 	}
-	userID, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("获取用户ID失败: %v", err)
-	}
-	return userID, nil
+	return result.LastInsertId()
 }
 
 // 验证用户凭据
@@ -60,6 +93,61 @@ func ValidateUser(db *sql.DB, username, password string) (*User, error) {
 		return &user, nil
 	}
 	return nil, fmt.Errorf("密码错误")
+}
+
+// 骑手身份申请
+func handleApplyForRider(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var request struct {
+		UserID      int     `json:"user_id"`
+		VehicleType string  `json:"vehicle_type"`
+		Status      string  `json:"status"`
+		Rating      float64 `json:"rating"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	// 验证用户是否存在
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE user_id = ?)", request.UserID).Scan(&exists)
+	if err != nil || !exists {
+		http.Error(w, "用户不存在", http.StatusBadRequest)
+		return
+	}
+
+	// 为用户生成 RiderID 并插入骑手数据
+	rider := Rider{
+		User:        User{UserID: request.UserID},
+		VehicleType: request.VehicleType,
+		Rating:      request.Rating,
+		Status:      request.Status,
+	}
+
+	riderID, err := insertRider(db, &rider)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("骑手身份申请失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+	rider.RiderID = int(riderID)
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(rider)
+}
+
+func insertRider(db *sql.DB, rider *Rider) (int64, error) {
+	query := "INSERT INTO riders (user_id, vehicle_type, rating, status) VALUES (?, ?, ?, ?)"
+	result, err := db.Exec(query, rider.UserID, rider.VehicleType, rider.Rating, rider.Status)
+	if err != nil {
+		return 0, fmt.Errorf("骑手插入失败: %v", err)
+	}
+	return result.LastInsertId()
 }
 
 // 查询商家商品
@@ -172,30 +260,6 @@ func handleOrderStatus(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonData)
 }
 
-// 用户注册
-func handleRegister(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var user User
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		http.Error(w, "请求体解析错误", http.StatusBadRequest)
-		return
-	}
-
-	// 注册用户
-	userID, err := RegisterUser(db, &user)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("用户注册失败: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	user.UserID = int(userID)
-	json.NewEncoder(w).Encode(user)
-}
-
 // 用户登录
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -228,6 +292,10 @@ func main() {
 	http.HandleFunc("/order/status", handleOrderStatus) // 查询订单状态
 	http.HandleFunc("/user/register", handleRegister)   // 用户注册
 	http.HandleFunc("/user/login", handleLogin)         // 用户登录
+
+	// 即时消息路由
+	http.HandleFunc("/im/send", HandleSendMessage(db, rp)) // 发送群组消息
+	http.HandleFunc("/im/messages", HandleGetMessages(db)) // 获取群组消息
 
 	log.Println("服务器启动，端口 :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
