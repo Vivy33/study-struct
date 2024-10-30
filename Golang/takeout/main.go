@@ -54,7 +54,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 插入用户数据
-	userID, err := insertUser(db, &user)
+	userID, err := insertUser(rp, db, &user)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("用户注册失败: %v", err), http.StatusInternalServerError)
 		return
@@ -65,14 +65,163 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(user)
 }
 
-// 插入用户到数据库
-func insertUser(db *sql.DB, user *User) (int64, error) {
+// handleRegisterShop 处理商家注册的 HTTP 请求
+func handleRegisterShop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var shop Shop
+	if err := json.NewDecoder(r.Body).Decode(&shop); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	// 检查商家名称是否已存在
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM Shop WHERE ShopName = ?)", shop.ShopName).Scan(&exists)
+	if err != nil {
+		http.Error(w, "商家名称检查失败", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		http.Error(w, "商家名称已存在，请选择其他名称", http.StatusConflict)
+		return
+	}
+
+	// 插入商家数据
+	shopID, err := insertShop(rp, db, &shop)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("商家注册失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	shop.ShopID = int(shopID)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(shop)
+}
+
+func insertUser(rp *RedisPool, db *sql.DB, user *User) (int64, error) {
+	// Insert user into MySQL
 	query := "INSERT INTO users (username, password, phone, address) VALUES (?, ?, ?, ?)"
 	result, err := db.Exec(query, user.Username, user.Password, user.Phone, user.Address)
 	if err != nil {
-		return 0, fmt.Errorf("用户插入失败: %v", err)
+		return 0, fmt.Errorf("failed to insert user into MySQL: %v", err)
 	}
-	return result.LastInsertId()
+	userID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get user ID from MySQL: %v", err)
+	}
+
+	// Insert user into Redis
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.HMSet(ctx, fmt.Sprintf("user:%d", userID), map[string]interface{}{
+		"user_id":  userID,
+		"username": user.Username,
+		"password": user.Password,
+		"phone":    user.Phone,
+		"address":  user.Address,
+	}).Err()
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert user into Redis: %v", err)
+	}
+
+	return userID, nil
+}
+
+func insertShop(rp *RedisPool, db *sql.DB, shop *Shop) (int64, error) {
+	// Insert shop into MySQL
+	query := "INSERT INTO Shop (ShopName, Phone, Address, Description) VALUES (?, ?, ?, ?)"
+	result, err := db.Exec(query, shop.ShopName, shop.Phone, shop.Address, shop.Description)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert shop into MySQL: %v", err)
+	}
+	shopID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get shop ID from MySQL: %v", err)
+	}
+
+	// Insert shop into Redis
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.HMSet(ctx, fmt.Sprintf("shop:%d", shopID), map[string]interface{}{
+		"shop_id":     shopID,
+		"shop_name":   shop.ShopName,
+		"phone":       shop.Phone,
+		"address":     shop.Address,
+		"description": shop.Description,
+	}).Err()
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert shop into Redis: %v", err)
+	}
+
+	return shopID, nil
+}
+
+func insertRider(rp *RedisPool, db *sql.DB, rider *Rider) (int64, error) {
+	// Insert rider into MySQL
+	query := "INSERT INTO riders (user_id, vehicle_type, rating, riderstatus) VALUES (?, ?, ?, ?)"
+	result, err := db.Exec(query, rider.UserID, rider.VehicleType, rider.Rating, rider.RiderStatus)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert rider into MySQL: %v", err)
+	}
+	riderID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rider ID from MySQL: %v", err)
+	}
+
+	// Insert rider into Redis
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.HMSet(ctx, fmt.Sprintf("rider:%d", riderID), map[string]interface{}{
+		"user_id":      rider.UserID,
+		"rider_id":     riderID,
+		"username":     rider.Username,
+		"password":     rider.Password,
+		"phone":        rider.Phone,
+		"address":      rider.Address,
+		"vehicle_type": rider.VehicleType,
+		"rating":       rider.Rating,
+		"riderstatus":  rider.RiderStatus,
+	}).Err()
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert rider into Redis: %v", err)
+	}
+
+	return riderID, nil
+}
+
+func insertOrder(rp *RedisPool, db *sql.DB, order *Order) (int64, error) {
+	// Insert order into MySQL
+	query := "INSERT INTO orders (user_id, shop_id, product_id, orderstatus, order_time, total_price) VALUES (?, ?, ?, ?, ?, ?)"
+	result, err := db.Exec(query, order.UserID, order.ShopID, order.ProductID, order.OrderStatus, order.OrderTime, order.TotalPrice)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert order into MySQL: %v", err)
+	}
+	orderID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get order ID from MySQL: %v", err)
+	}
+
+	// Insert order into Redis
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.HMSet(ctx, fmt.Sprintf("order:%d", orderID), map[string]interface{}{
+		"order_id":    orderID,
+		"user_id":     order.UserID,
+		"shop_id":     order.ShopID,
+		"product_id":  order.ProductID,
+		"orderstatus": order.OrderStatus,
+		"order_time":  order.OrderTime.Format(time.RFC3339),
+		"total_price": order.TotalPrice,
+	}).Err()
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert order into Redis: %v", err)
+	}
+
+	return orderID, nil
 }
 
 // 验证用户凭据
@@ -127,10 +276,10 @@ func handleApplyForRider(w http.ResponseWriter, r *http.Request) {
 		User:        User{UserID: request.UserID},
 		VehicleType: request.VehicleType,
 		Rating:      request.Rating,
-		Status:      request.Status,
+		RiderStatus: request.Status,
 	}
 
-	riderID, err := insertRider(db, &rider)
+	riderID, err := insertRider(rp, db, &rider)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("骑手身份申请失败: %v", err), http.StatusInternalServerError)
 		return
@@ -139,15 +288,6 @@ func handleApplyForRider(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(rider)
-}
-
-func insertRider(db *sql.DB, rider *Rider) (int64, error) {
-	query := "INSERT INTO riders (user_id, vehicle_type, rating, status) VALUES (?, ?, ?, ?)"
-	result, err := db.Exec(query, rider.UserID, rider.VehicleType, rider.Rating, rider.Status)
-	if err != nil {
-		return 0, fmt.Errorf("骑手插入失败: %v", err)
-	}
-	return result.LastInsertId()
 }
 
 // 查询商家商品
@@ -213,11 +353,8 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 删除与订单相关的 Redis 缓存
-	DeleteFromCache(rp, fmt.Sprintf("order_status_%d", order.OrderID))
-
 	// 插入订单到数据库
-	orderID, err := InsertOrder(db, &order)
+	orderID, err := insertOrder(rp, db, &order)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("订单插入失败: %v", err), http.StatusInternalServerError)
 		return
@@ -229,6 +366,8 @@ func handleOrder(w http.ResponseWriter, r *http.Request) {
 	jsonData, _ := json.Marshal(order)
 	SetToCache(rp, fmt.Sprintf("order_status_%d", order.OrderID), string(jsonData), time.Hour)
 
+	// 返回订单详情和订单ID
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(order)
 }
 
@@ -294,8 +433,8 @@ func main() {
 	http.HandleFunc("/user/login", handleLogin)         // 用户登录
 
 	// 即时消息路由
-	http.HandleFunc("/im/send", HandleSendMessage(db, rp)) // 发送群组消息
-	http.HandleFunc("/im/messages", HandleGetMessages(db)) // 获取群组消息
+	http.HandleFunc("/im/send", HandleSendMessage(db, rp))     // 发送群组消息
+	http.HandleFunc("/im/messages", HandleGetMessages(db, rp)) // 获取群组消息
 
 	log.Println("服务器启动，端口 :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
