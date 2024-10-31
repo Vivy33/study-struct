@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -222,6 +223,36 @@ func insertOrder(rp *RedisPool, db *sql.DB, order *Order) (int64, error) {
 	}
 
 	return orderID, nil
+}
+
+func insertGroup(rp *RedisPool, db *sql.DB, group *Group) (int64, error) {
+	// Insert group into MySQL
+	query := "INSERT INTO Groups (order_id, user_id, shop_id, rider_id) VALUES (?, ?, ?, ?)"
+	result, err := db.Exec(query, group.OrderID, group.UserID, group.ShopID, group.RiderID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert group into MySQL: %v", err)
+	}
+	groupID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get group ID from MySQL: %v", err)
+	}
+
+	// Insert group into Redis
+	ctx := context.Background()
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.HMSet(ctx, fmt.Sprintf("group:%d", groupID), map[string]interface{}{
+		"group_id": groupID,
+		"order_id": group.OrderID,
+		"user_id":  group.UserID,
+		"shop_id":  group.ShopID,
+		"rider_id": group.RiderID,
+	}).Err()
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert group into Redis: %v", err)
+	}
+
+	return groupID, nil
 }
 
 // 验证用户凭据
