@@ -40,7 +40,7 @@ func InsertOrder(db *sql.DB, order *Order) (int64, error) {
 	}
 
 	query := "INSERT INTO orders (user_id, shop_id, status, total_price) VALUES (?, ?, ?, ?)"
-	result, err := tx.Exec(query, order.UserID, order.ShopID, order.Status, order.TotalPrice)
+	result, err := tx.Exec(query, order.UserID, order.ShopID, order.OrderStatus, order.TotalPrice)
 	if err != nil {
 		tx.Rollback()
 		return 0, fmt.Errorf("订单插入失败: %v", err)
@@ -114,7 +114,7 @@ func QueryProductsByShopID(db *sql.DB, shopID int) ([]Product, error) {
 	var products []Product
 	for rows.Next() {
 		var product Product
-		if err := rows.Scan(&product.ProductID, &product.Name, &product.Description, &product.Price, &product.Stock); err != nil {
+		if err := rows.Scan(&product.ProductID, &product.ProductName, &product.Description, &product.Price, &product.Stock); err != nil {
 			return nil, err
 		}
 		products = append(products, product)
@@ -134,7 +134,7 @@ func QueryShops(db *sql.DB, limit int) ([]Shop, error) {
 	var shops []Shop
 	for rows.Next() {
 		var shop Shop
-		if err := rows.Scan(&shop.ShopID, &shop.Name, &shop.Phone, &shop.Address, &shop.Description); err != nil {
+		if err := rows.Scan(&shop.ShopID, &shop.ShopName, &shop.Phone, &shop.Address, &shop.Description); err != nil {
 			return nil, err
 		}
 		shops = append(shops, shop)
