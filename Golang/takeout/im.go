@@ -38,8 +38,9 @@ func CreateGroup(order map[string]interface{}, rp *RedisPool, db *sql.DB) error 
 }
 
 // NewGroupMessage 创建带有时间戳的新消息
-func NewGroupMessage(groupID, senderID int, content string) *Message {
+func NewGroupMessage(messageID, groupID, senderID int, content string) *Message {
 	return &Message{
+		MessageID: messageID,
 		GroupID:   groupID,
 		SenderID:  senderID,
 		Content:   content,
