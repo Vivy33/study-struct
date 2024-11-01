@@ -63,8 +63,9 @@ type Group struct {
 
 // Message 表示一条群聊消息的结构体
 type Message struct {
-	GroupID   int       `json:"group_id"`  // 群组ID
-	SenderID  int       `json:"sender_id"` // 发送者ID
-	Content   string    `json:"content"`   // 消息内容
-	Timestamp time.Time `json:"timestamp"` // 消息时间戳
+	MessageID int       `json:"message_id"` // 某条消息的ID
+	GroupID   int       `json:"group_id"`   // 群组ID
+	SenderID  int       `json:"sender_id"`  // 发送者ID
+	Content   string    `json:"content"`    // 消息内容
+	Timestamp time.Time `json:"timestamp"`  // 消息时间戳
 }
