@@ -22,11 +22,12 @@ type Rider struct {
 
 // 商家结构体
 type Shop struct {
-	ShopID      int    `json:"shop_id"`
-	ShopName    string `json:"shopname"`
-	Phone       string `json:"phone"`
-	Address     string `json:"address"`
-	Description string `json:"description"`
+	ShopID       int    `json:"shop_id"`
+	ShopName     string `json:"shopname"`
+	ShopPassword string `json:"shop_password"`
+	Phone        string `json:"phone"`
+	Address      string `json:"address"`
+	Description  string `json:"description"`
 }
 
 // 商品结构体
