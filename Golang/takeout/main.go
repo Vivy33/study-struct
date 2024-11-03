@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Redis 和 MySQL 初始化
@@ -54,6 +56,14 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 哈希密码
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "密码哈希失败", http.StatusInternalServerError)
+		return
+	}
+	user.Password = string(passwordHash)
+
 	// 插入用户数据
 	userID, err := insertUser(rp, db, &user)
 	if err != nil {
@@ -81,7 +91,7 @@ func handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 
 	// 检查商家名称是否已存在
 	var exists bool
-	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM Shop WHERE ShopName = ?)", shop.ShopName).Scan(&exists)
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM shops WHERE shop_name = ?)", shop.ShopName).Scan(&exists)
 	if err != nil {
 		http.Error(w, "商家名称检查失败", http.StatusInternalServerError)
 		return
@@ -90,6 +100,14 @@ func handleRegisterShop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "商家名称已存在，请选择其他名称", http.StatusConflict)
 		return
 	}
+
+	// 哈希密码
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(shop.ShopPassword), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "密码哈希失败", http.StatusInternalServerError)
+		return
+	}
+	shop.ShopPassword = string(passwordHash)
 
 	// 插入商家数据
 	shopID, err := insertShop(rp, db, &shop)
@@ -257,22 +275,36 @@ func insertGroup(rp *RedisPool, db *sql.DB, group *Group) (int64, error) {
 
 // 验证用户凭据
 func ValidateUser(db *sql.DB, username, password string) (*User, error) {
-	query := "SELECT user_id, username, password, phone, address FROM users WHERE username = ?"
-	row := db.QueryRow(query, username)
-
 	var user User
-	if err := row.Scan(&user.UserID, &user.Username, &user.Password, &user.Phone, &user.Address); err != nil {
+	err := db.QueryRow("SELECT user_id, username, password FROM users WHERE username = ?", username).Scan(&user.UserID, &user.Username, &user.Password)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("用户不存在")
 		}
-		return nil, fmt.Errorf("查询用户失败: %v", err)
+		return nil, err
 	}
 
-	// 简单的密码验证
-	if user.Password == password {
-		return &user, nil
+	// 比较哈希后的密码和输入的密码
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
+	if err != nil {
+		return nil, fmt.Errorf("密码错误")
 	}
-	return nil, fmt.Errorf("密码错误")
+
+	return &user, nil
+}
+
+func ValidateShop(shop *Shop) error {
+	if shop.ShopName == "" {
+		return fmt.Errorf("商家名称不能为空")
+	}
+	if shop.Address == "" {
+		return fmt.Errorf("商家地址不能为空")
+	}
+	if shop.Phone == "" {
+		return fmt.Errorf("商家电话不能为空")
+	}
+
+	return nil
 }
 
 // 骑手身份申请
@@ -437,21 +469,67 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var user User
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+	var loginRequest struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&loginRequest); err != nil {
 		http.Error(w, "请求体解析错误", http.StatusBadRequest)
 		return
 	}
 
 	// 使用 ValidateUser 函数检查用户凭据
-	validatedUser, err := ValidateUser(db, user.Username, user.Password)
+	validatedUser, err := ValidateUser(db, loginRequest.Username, loginRequest.Password)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("登录失败: %v", err), http.StatusUnauthorized)
 		return
 	}
 
 	// 返回登录成功信息
-	json.NewEncoder(w).Encode(map[string]string{"status": "登录成功", "username": validatedUser.Username})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "登录成功",
+		"username": validatedUser.Username,
+		"user_id":  validatedUser.UserID,
+	})
+}
+
+func handleLoginShop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var credentials struct {
+		ShopName string `json:"shop_name"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	var shop Shop
+	err := db.QueryRow("SELECT ShopID, ShopName, Address, Phone, ShopPassword FROM Shop WHERE ShopName = ?", credentials.ShopName).Scan(
+		&shop.ShopID, &shop.ShopName, &shop.Address, &shop.Phone, &shop.ShopPassword,
+	)
+	if err == sql.ErrNoRows {
+		http.Error(w, "商家名称或密码错误", http.StatusUnauthorized)
+		return
+	} else if err != nil {
+		http.Error(w, "查询商家信息失败", http.StatusInternalServerError)
+		return
+	}
+
+	// 验证密码
+	if err := bcrypt.CompareHashAndPassword([]byte(shop.ShopPassword), []byte(credentials.Password)); err != nil {
+		http.Error(w, "商家名称或密码错误", http.StatusUnauthorized)
+		return
+	}
+
+	// 登录成功
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(shop)
 }
 
 // HTTP 服务启动
