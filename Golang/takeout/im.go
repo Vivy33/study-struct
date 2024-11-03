@@ -74,6 +74,9 @@ func SaveMessage(db *sql.DB, msg *Message) error {
 }
 
 // HandleSendMessage 处理通过 HTTP 请求发送消息
+// 先将消息保存到数据库，然后再发布到 Redis
+// 如果数据库保存失败，可以立即返回错误，而不必处理已发送的 Redis 消息可能带来的不一致问题
+// 避免了在发布消息到 Redis 后数据库写入失败的情况
 func HandleSendMessage(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var msg Message
@@ -85,19 +88,19 @@ func HandleSendMessage(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 
 		// 设置当前时间戳
 		msg.Timestamp = time.Now()
-		channel := fmt.Sprintf("group_%d", msg.GroupID)
 
-		// 将消息发布到 Redis
-		if err := PublishMessage(rp, channel, msg.Content); err != nil {
-			log.Printf("发布消息失败: %v", err)
-			http.Error(w, fmt.Sprintf("发布消息失败: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// 将消息保存到数据库
+		// 将消息先保存到数据库，确保数据持久化
 		if err := SaveMessage(db, &msg); err != nil {
 			log.Printf("保存消息失败: %v", err)
 			http.Error(w, fmt.Sprintf("保存消息失败: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// 将消息发布到 Redis 频道，供其他组件实时处理
+		channel := fmt.Sprintf("group_%d", msg.GroupID)
+		if err := PublishMessage(rp, channel, msg.Content); err != nil {
+			log.Printf("发布消息失败: %v", err)
+			http.Error(w, fmt.Sprintf("发布消息失败: %v", err), http.StatusInternalServerError)
 			return
 		}
 
@@ -178,16 +181,13 @@ func StartWeeklyCleanUpScheduler(db *sql.DB) {
 	ticker := time.NewTicker(7 * 24 * time.Hour)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			log.Println("开始每周清理任务...")
-			err := CleanUpOldRecords(db)
-			if err != nil {
-				log.Printf("每周清理任务失败: %v", err)
-			} else {
-				log.Println("每周清理任务成功完成")
-			}
+	for range ticker.C { // 使用 for range 循环来处理通道接收
+		log.Println("开始每周清理任务...")
+		err := CleanUpOldRecords(db)
+		if err != nil {
+			log.Printf("每周清理任务失败: %v", err)
+		} else {
+			log.Println("每周清理任务成功完成")
 		}
 	}
 }
