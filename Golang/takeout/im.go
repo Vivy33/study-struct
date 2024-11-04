@@ -65,8 +65,8 @@ func PublishMessage(rp *RedisPool, channel, message string) error {
 
 // SaveMessage 将消息保存到数据库中，确保按时间戳排序
 func SaveMessage(db *sql.DB, msg *Message) error {
-	query := "INSERT INTO messages (group_id, sender_id, content, timestamp) VALUES (?, ?, ?, ?)"
-	_, err := db.Exec(query, msg.GroupID, msg.SenderID, msg.Content, msg.Timestamp)
+	query := "INSERT INTO messages (group_id, sender_id, sender_name, content, timestamp) VALUES (?, ?, ?, ?, ?)"
+	_, err := db.Exec(query, msg.GroupID, msg.SenderID, msg.SenderName, msg.Content, msg.Timestamp)
 	if err != nil {
 		return fmt.Errorf("保存消息失败: %v", err)
 	}
@@ -126,7 +126,7 @@ func HandleGetMessages(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 		cachedMessages, err := rdb.Get(context.Background(), groupID).Result()
 		if err == redis.Nil {
 			// 从数据库中按时间戳顺序获取消息
-			rows, err := db.Query("SELECT group_id, sender_id, content, timestamp FROM messages WHERE group_id = ? ORDER BY timestamp ASC", groupID)
+			rows, err := db.Query("SELECT group_id, sender_id, sender_name, content, timestamp FROM messages WHERE group_id = ? ORDER BY timestamp ASC", groupID)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("查询消息失败: %v", err), http.StatusInternalServerError)
 				return
@@ -136,7 +136,7 @@ func HandleGetMessages(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 			var messages []Message
 			for rows.Next() {
 				var msg Message
-				if err := rows.Scan(&msg.GroupID, &msg.SenderID, &msg.Content, &msg.Timestamp); err != nil {
+				if err := rows.Scan(&msg.GroupID, &msg.SenderID, &msg.SenderName, &msg.Content, &msg.Timestamp); err != nil {
 					http.Error(w, fmt.Sprintf("解析消息失败: %v", err), http.StatusInternalServerError)
 					return
 				}
