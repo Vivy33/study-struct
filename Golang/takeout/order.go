@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -14,7 +15,7 @@ import (
 )
 
 // 用户下单，将订单信息发布到订单频道
-func UserPlaceOrder(orderID, userID, shopID int, rp *RedisPool) error {
+func UserPlaceOrder(orderID, userID, shopID, riderID int, rp *RedisPool) error {
 	rdb := rp.GetClient()
 	defer rp.PutClient(rdb)
 
@@ -23,6 +24,7 @@ func UserPlaceOrder(orderID, userID, shopID int, rp *RedisPool) error {
 		"order_id": orderID,
 		"user_id":  userID,
 		"shop_id":  shopID,
+		"rider_id": riderID,
 	}
 	orderJSON, err := json.Marshal(order)
 	if err != nil {
@@ -38,16 +40,82 @@ func UserPlaceOrder(orderID, userID, shopID int, rp *RedisPool) error {
 	return nil
 }
 
+// 提交订单并更新 Redis 缓存
+func handleOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var order Order
+	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	// 设置初始订单状态
+	order.OrderStatus = "商家待确认"
+
+	// 插入订单到数据库
+	orderID, err := insertOrder(rp, db, &order)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("订单插入失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	order.OrderID = int(orderID)
+
+	// 更新 Redis 缓存
+	jsonData, _ := json.Marshal(order)
+	SetToCache(rp, fmt.Sprintf("order_status_%d", order.OrderID), string(jsonData), time.Hour)
+
+	// 返回订单详情和订单ID
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(order)
+}
+
+// 查询订单状态
+func handleOrderStatus(w http.ResponseWriter, r *http.Request) {
+	orderIDStr := r.URL.Query().Get("order_id")
+	orderID, err := strconv.Atoi(orderIDStr)
+	if err != nil {
+		http.Error(w, "无效的订单ID", http.StatusBadRequest)
+		return
+	}
+
+	cacheKey := fmt.Sprintf("order_status_%d", orderID)
+	data, err := GetFromCache(rp, cacheKey)
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(data))
+		return
+	}
+
+	// 缓存未命中，从数据库查询订单状态
+	order, err := QueryOrderStatus(db, orderID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("订单不存在: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	jsonData, err := json.Marshal(order)
+	if err != nil {
+		http.Error(w, "JSON 序列化错误", http.StatusInternalServerError)
+		return
+	}
+	SetToCache(rp, cacheKey, string(jsonData), time.Hour)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(jsonData)
+}
+
 // 商家处理订单并将其发布到公共大厅
 func ShopProcessOrder(rp *RedisPool, db *sql.DB) {
 	rdb := rp.GetClient()
 	defer rp.PutClient(rdb)
 
-	// 订阅 "order_channel" 频道以接收新订单
 	subscriber := rdb.Subscribe(context.Background(), "order_channel")
 	channel := subscriber.Channel()
 
-	// 处理接收到的每个订单
 	for msg := range channel {
 		fmt.Printf("接收到订单消息: %s\n", msg.Payload)
 
@@ -57,30 +125,36 @@ func ShopProcessOrder(rp *RedisPool, db *sql.DB) {
 			continue
 		}
 
-		// 将订单 JSON 数据反序列化为 map 结构
+		// 打印消息内容以进行调试
+		fmt.Printf("Payload received: %s\n", msg.Payload)
+
 		var order map[string]interface{}
 		err := json.Unmarshal([]byte(msg.Payload), &order)
 		if err != nil {
-			fmt.Printf("订单JSON解析失败: %v\n", err)
+			fmt.Printf("订单 JSON 解析失败: %v\n", err)
 			fmt.Printf("Debug: Payload = %s\n", msg.Payload)
 			continue
 		}
 
-		// 将订单 JSON 格式数据推送到公共大厅
-		orderJSON, err := json.Marshal(order)
-		if err != nil {
-			fmt.Printf("订单JSON序列化失败: %v\n", err)
-			continue
+		// 更新订单状态为 "商家已接受"
+		orderStatus := map[string]interface{}{
+			"order_id":     order["order_id"],
+			"order_status": "商家已接受",
 		}
-		_, err = rdb.RPush(context.Background(), "public_hall", orderJSON).Result()
+		orderStatusJSON, err := json.Marshal(orderStatus)
 		if err != nil {
-			fmt.Printf("订单推送到公共大厅失败: %v\n", err)
+			fmt.Printf("订单状态 JSON 序列化失败: %v\n", err)
 			continue
-		} else {
-			fmt.Println("订单已推送到公共大厅")
 		}
 
-		// 随机选择骑手通知新订单
+		message := rdb.Publish(context.Background(), "order_channel", orderStatusJSON)
+		if message.Err() != nil {
+			fmt.Printf("订单状态更新失败: %v\n", message.Err())
+			continue
+		}
+		fmt.Println("订单状态已推送到订单频道")
+
+		// 通知随机骑手新订单
 		notifyRandomRider(db, rp, order)
 	}
 }
@@ -185,20 +259,23 @@ func GetOrderListFromMQ(rp *RedisPool) http.HandlerFunc {
 // 处理骑手抢单请求，保证事务处理
 func HandleRiderGrabOrder(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// 解析请求体获取订单 ID 和骑手 ID
+		if r.Method != http.MethodPost {
+			http.Error(w, "Only supports POST method", http.StatusMethodNotAllowed)
+			return
+		}
+
 		var requestData struct {
 			OrderID int `json:"order_id"`
 			RiderID int `json:"rider_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
-			http.Error(w, "无效的请体", http.StatusBadRequest)
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
 
-		// 开启事务
 		tx, err := db.Begin()
 		if err != nil {
-			http.Error(w, "事务开启失败", http.StatusInternalServerError)
+			http.Error(w, "Transaction start failed", http.StatusInternalServerError)
 			return
 		}
 		defer func() {
@@ -208,70 +285,37 @@ func HandleRiderGrabOrder(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 			}
 		}()
 
-		// 查询订单是否已被抢
-		var existingRiderID int
+		var existingRiderID sql.NullInt64
 		err = tx.QueryRow("SELECT rider_id FROM orders WHERE order_id = ? FOR UPDATE", requestData.OrderID).Scan(&existingRiderID)
-		if err != nil && err != sql.ErrNoRows {
-			tx.Rollback()
-			http.Error(w, "查询订单状态失败", http.StatusInternalServerError)
-			return
-		}
-
-		if existingRiderID != 0 {
-			tx.Rollback()
-			http.Error(w, "订单已被其他骑手抢走", http.StatusConflict)
-			return
-		}
-
-		// 通知骑手抢单成功，并等待骑手响应
-		rdb := rp.GetClient()
-		defer rp.PutClient(rdb)
-		orderNotification := map[string]interface{}{
-			"order_id": requestData.OrderID,
-			"rider_id": requestData.RiderID,
-			"status":   "pending",
-		}
-		orderNotificationJSON, _ := json.Marshal(orderNotification)
-		riderChannel := fmt.Sprintf("rider_%d", requestData.RiderID)
-		_, err = rdb.Publish(context.Background(), riderChannel, orderNotificationJSON).Result()
 		if err != nil {
-			http.Error(w, fmt.Sprintf("订单通知失败: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// 等待骑手响应
-		response, err := waitForRiderResponse(requestData.RiderID)
-		if err != nil || response != "accept" {
+			if err == sql.ErrNoRows {
+				http.Error(w, "Order does not exist", http.StatusNotFound)
+			} else {
+				http.Error(w, "Failed to query order status", http.StatusInternalServerError)
+			}
 			tx.Rollback()
-			http.Error(w, "骑手拒绝了订单", http.StatusConflict)
 			return
 		}
 
-		// 更新订单，将骑手 ID 添加到订单中
-		_, err = tx.Exec("UPDATE orders SET rider_id = ? WHERE order_id = ?", requestData.RiderID, requestData.OrderID)
+		if existingRiderID.Valid && existingRiderID.Int64 != 0 {
+			http.Error(w, "Order has already been taken by another rider", http.StatusConflict)
+			return
+		}
+
+		// 更新订单状态为 "骑手已接单"
+		_, err = tx.Exec("UPDATE orders SET rider_id = ?, order_status = ? WHERE order_id = ?", requestData.RiderID, "骑手已接单", requestData.OrderID)
 		if err != nil {
 			tx.Rollback()
-			http.Error(w, "抢单失败", http.StatusInternalServerError)
+			http.Error(w, "Failed to update order", http.StatusInternalServerError)
 			return
 		}
 
-		// 提交事务
 		if err := tx.Commit(); err != nil {
-			http.Error(w, "事务提交失败", http.StatusInternalServerError)
+			http.Error(w, "Transaction commit failed", http.StatusInternalServerError)
 			return
 		}
 
-		// 发布成功消息到骑手专属频道
-		orderNotification["status"] = "success"
-		orderNotificationJSON, _ = json.Marshal(orderNotification)
-		_, err = rdb.Publish(context.Background(), riderChannel, orderNotificationJSON).Result()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("订单通知失败: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// 返回成功响应
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "抢单成功"})
+		json.NewEncoder(w).Encode(map[string]string{"status": "Order accepted successfully"})
 	}
 }
