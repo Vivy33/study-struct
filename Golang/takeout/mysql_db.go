@@ -12,7 +12,7 @@ import (
 func InitDB() (*sql.DB, error) {
 	dsn := fmt.Sprintf(
 		"%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=True&loc=Local",
-		"root", "admin", "127.0.0.1", 3307, "go_test", "utf8",
+		"root", "admin", "127.0.0.1", 3307, "go_shop", "utf8",
 	)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -89,17 +89,17 @@ func DeleteOrder(db *sql.DB, orderID int) error {
 	return tx.Commit()
 }
 
-// 根据订单ID查询订单状态
-func QueryOrderStatus(db *sql.DB, orderID int) (string, error) {
-	query := "SELECT status FROM orders WHERE order_id = ?"
+// 查询订单状态
+func QueryOrderStatus(db *sql.DB, orderID int) (*Order, error) {
+	var order Order
+	query := `SELECT order_id, rider_id, shop_id, product_id, order_time, total_price, order_status FROM orders WHERE order_id = ?`
 	row := db.QueryRow(query, orderID)
-
-	var status string
-	if err := row.Scan(&status); err != nil {
-		return "", fmt.Errorf("查询订单状态失败: %v", err)
+	err := row.Scan(&order.OrderID, &order.RiderID, &order.ShopID, &order.ProductID, &order.OrderTime, &order.TotalPrice, &order.OrderStatus)
+	// 一般返回username, shopname而不是ID, 这里为了方便测试而用ID
+	if err != nil {
+		return nil, err
 	}
-
-	return status, nil
+	return &order, nil
 }
 
 // 查询商家的商品列表
