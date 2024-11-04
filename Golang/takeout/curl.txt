@@ -1,0 +1,76 @@
+# 用户注册
+curl -X POST -H "Content-Type: application/json" -d '{
+    "username": "user1", 
+    "password": "password1", 
+    "phone": "1234567890", 
+    "address": "123 Street"
+}' http://localhost:8080/user/register
+
+# 商家注册
+curl -X POST -H "Content-Type: application/json" -d '{
+    "shop_name": "shop1",
+    "shop_password": "password1", 
+    "phone": "0987654321", 
+    "address": "456 Avenue", 
+    "description": "Best shop ever"
+}' http://localhost:8080/shop/register
+
+# 骑手身份申请
+curl -X POST -H "Content-Type: application/json" -d '{
+    "user_id": 1, 
+    "vehicle_type": "bike",
+    "status": "online",
+    "rating": 5.0
+}' http://localhost:8080/rider/apply
+
+# 用户登录
+curl -X POST -H "Content-Type: application/json" -d '{
+    "username": "user1",
+    "password": "password1"
+}' http://localhost:8080/user/login
+
+# 商家登录
+curl -X POST -H "Content-Type: application/json" -d '{
+    "shop_name": "shop1", 
+    "password": "password1"
+}' http://localhost:8080/shop/login
+
+# 商家添加商品
+curl -X POST -H "Content-Type: application/json" -d '{
+    "shop_id": 1,
+    "product_name": "Example Product",
+    "description": "This is an example product",
+    "price": 99.99,
+    "stock": 100
+}' http://localhost:8080/shop/add_product
+
+# 下单
+curl -X POST -H "Content-Type: application/json" -d '{
+    "user_id": 1, 
+    "shop_id": 1, 
+    "rider_id": 1,
+    "product_id": 1, 
+    "orderstatus": "商家待确认", 
+    "order_time": "2024-11-03T12:00:00Z",
+    "total_price": 100.0
+}' http://localhost:8080/order
+
+# 查询订单状态
+curl "http://localhost:8080/order/status?order_id=1"
+
+# 骑手抢单
+curl -X POST -H "Content-Type: application/json" -d '{
+    "order_id": 1, 
+    "rider_id": 1
+}' http://localhost:8080/rider/grab
+
+# 发送消息
+curl -X POST -H "Content-Type: application/json" -d '{
+    "group_id": 1,
+    "sender_id": 1,
+    "sender_name": "user1",
+    "content": "Hello, world!"
+}' http://localhost:8080/im/send
+
+# 获取群组消息
+curl "http://localhost:8080/im/messages?group_id=1"
