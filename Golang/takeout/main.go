@@ -48,10 +48,12 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)", user.Username).Scan(&exists)
 	if err != nil {
+		log.Printf("用户名检查失败: %v", err)
 		http.Error(w, "用户名检查失败", http.StatusInternalServerError)
 		return
 	}
 	if exists {
+		log.Printf("用户名已存在: %s", user.Username)
 		http.Error(w, "用户名已存在，请选择其他用户名", http.StatusConflict)
 		return
 	}
@@ -59,6 +61,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	// 哈希密码
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 	if err != nil {
+		log.Printf("密码哈希失败: %v", err)
 		http.Error(w, "密码哈希失败", http.StatusInternalServerError)
 		return
 	}
@@ -67,6 +70,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	// 插入用户数据
 	userID, err := insertUser(rp, db, &user)
 	if err != nil {
+		log.Printf("用户注册失败: %v", err)
 		http.Error(w, fmt.Sprintf("用户注册失败: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -152,8 +156,8 @@ func insertUser(rp *RedisPool, db *sql.DB, user *User) (int64, error) {
 
 func insertShop(rp *RedisPool, db *sql.DB, shop *Shop) (int64, error) {
 	// Insert shop into MySQL
-	query := "INSERT INTO Shop (ShopName, Phone, Address, Description) VALUES (?, ?, ?, ?)"
-	result, err := db.Exec(query, shop.ShopName, shop.Phone, shop.Address, shop.Description)
+	query := "INSERT INTO shops (shop_name, shop_password, phone, address, description) VALUES (?, ?, ?, ?, ?)"
+	result, err := db.Exec(query, shop.ShopName, shop.ShopPassword, shop.Phone, shop.Address, shop.Description)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert shop into MySQL: %v", err)
 	}
@@ -166,11 +170,12 @@ func insertShop(rp *RedisPool, db *sql.DB, shop *Shop) (int64, error) {
 	rdb := rp.GetClient()
 	defer rp.PutClient(rdb)
 	err = rdb.HMSet(ctx, fmt.Sprintf("shop:%d", shopID), map[string]interface{}{
-		"shop_id":     shopID,
-		"shop_name":   shop.ShopName,
-		"phone":       shop.Phone,
-		"address":     shop.Address,
-		"description": shop.Description,
+		"shop_id":       shopID,
+		"shop_name":     shop.ShopName,
+		"shop_password": shop.ShopPassword,
+		"phone":         shop.Phone,
+		"address":       shop.Address,
+		"description":   shop.Description,
 	}).Err()
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert shop into Redis: %v", err)
@@ -181,7 +186,7 @@ func insertShop(rp *RedisPool, db *sql.DB, shop *Shop) (int64, error) {
 
 func insertRider(rp *RedisPool, db *sql.DB, rider *Rider) (int64, error) {
 	// Insert rider into MySQL
-	query := "INSERT INTO riders (user_id, vehicle_type, rating, riderstatus) VALUES (?, ?, ?, ?)"
+	query := "INSERT INTO riders (user_id, vehicle_type, rating, rider_status) VALUES (?, ?, ?, ?)"
 	result, err := db.Exec(query, rider.UserID, rider.VehicleType, rider.Rating, rider.RiderStatus)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert rider into MySQL: %v", err)
@@ -214,7 +219,7 @@ func insertRider(rp *RedisPool, db *sql.DB, rider *Rider) (int64, error) {
 
 func insertOrder(rp *RedisPool, db *sql.DB, order *Order) (int64, error) {
 	// Insert order into MySQL
-	query := "INSERT INTO orders (user_id, shop_id, product_id, orderstatus, order_time, total_price) VALUES (?, ?, ?, ?, ?, ?)"
+	query := "INSERT INTO orders (user_id, shop_id, product_id, order_status, order_time, total_price) VALUES (?, ?, ?, ?, ?, ?)"
 	result, err := db.Exec(query, order.UserID, order.ShopID, order.ProductID, order.OrderStatus, order.OrderTime, order.TotalPrice)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert order into MySQL: %v", err)
@@ -228,13 +233,13 @@ func insertOrder(rp *RedisPool, db *sql.DB, order *Order) (int64, error) {
 	rdb := rp.GetClient()
 	defer rp.PutClient(rdb)
 	err = rdb.HMSet(ctx, fmt.Sprintf("order:%d", orderID), map[string]interface{}{
-		"order_id":    orderID,
-		"user_id":     order.UserID,
-		"shop_id":     order.ShopID,
-		"product_id":  order.ProductID,
-		"orderstatus": order.OrderStatus,
-		"order_time":  order.OrderTime.Format(time.RFC3339),
-		"total_price": order.TotalPrice,
+		"order_id":     orderID,
+		"user_id":      order.UserID,
+		"shop_id":      order.ShopID,
+		"product_id":   order.ProductID,
+		"order_status": order.OrderStatus,
+		"order_time":   order.OrderTime.Format(time.RFC3339),
+		"total_price":  order.TotalPrice,
 	}).Err()
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert order into Redis: %v", err)
@@ -245,7 +250,7 @@ func insertOrder(rp *RedisPool, db *sql.DB, order *Order) (int64, error) {
 
 func insertGroup(rp *RedisPool, db *sql.DB, group *Group) (int64, error) {
 	// Insert group into MySQL
-	query := "INSERT INTO Groups (order_id, user_id, shop_id, rider_id) VALUES (?, ?, ?, ?)"
+	query := "INSERT INTO `groups` (order_id, user_id, shop_id, rider_id) VALUES (?, ?, ?, ?)" // 确保表名正确
 	result, err := db.Exec(query, group.OrderID, group.UserID, group.ShopID, group.RiderID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert group into MySQL: %v", err)
@@ -353,6 +358,69 @@ func handleApplyForRider(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(rider)
 }
 
+// AddProductForShop 添加商品到指定店铺
+func AddProductForShop(rp *RedisPool, db *sql.DB, shopID int, product *Product) (int64, error) {
+	// 插入商品到数据库
+	query := "INSERT INTO products (shop_id, product_name, description, price, stock) VALUES (?, ?, ?, ?, ?)"
+	result, err := db.Exec(query, product.ShopID, product.ProductName, product.Description, product.Price, product.Stock)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert product into MySQL: %v", err)
+	}
+	productID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get product ID from MySQL: %v", err)
+	}
+
+	// 插入商品到 Redis
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.HMSet(ctx, fmt.Sprintf("product:%d", productID), map[string]interface{}{
+		"product_id":   productID,
+		"shop_id":      product.ShopID,
+		"product_name": product.ProductName,
+		"description":  product.Description,
+		"price":        product.Price,
+		"stock":        product.Stock,
+	}).Err()
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert product into Redis: %v", err)
+	}
+
+	return productID, nil
+}
+
+// HandleAddProductForShop HTTP处理函数
+func HandleAddProductForShop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only supports POST method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var product Product
+	if err := json.NewDecoder(r.Body).Decode(&product); err != nil {
+		http.Error(w, "Request body parse error", http.StatusBadRequest)
+		return
+	}
+
+	// 确保 shopID 是有效的
+	if product.ShopID == 0 {
+		http.Error(w, "Invalid shop ID", http.StatusBadRequest)
+		return
+	}
+
+	productID, err := AddProductForShop(rp, db, product.ShopID, &product)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to add product: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":     "Product added successfully",
+		"product_id": productID,
+	})
+}
+
 // 查询商家商品
 func handleShopProducts(w http.ResponseWriter, r *http.Request) {
 	shopIDStr := r.URL.Query().Get("shop_id")
@@ -399,65 +467,6 @@ func handleNearbyShops(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonData, _ := json.Marshal(shops)
-	SetToCache(rp, cacheKey, string(jsonData), time.Hour)
-	w.Write(jsonData)
-}
-
-// 提交订单并更新 Redis 缓存
-func handleOrder(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var order Order
-	if err := json.NewDecoder(r.Body).Decode(&order); err != nil {
-		http.Error(w, "请求体解析错误", http.StatusBadRequest)
-		return
-	}
-
-	// 插入订单到数据库
-	orderID, err := insertOrder(rp, db, &order)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("订单插入失败: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	order.OrderID = int(orderID)
-
-	// 更新 Redis 缓存
-	jsonData, _ := json.Marshal(order)
-	SetToCache(rp, fmt.Sprintf("order_status_%d", order.OrderID), string(jsonData), time.Hour)
-
-	// 返回订单详情和订单ID
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(order)
-}
-
-// 查询订单状态
-func handleOrderStatus(w http.ResponseWriter, r *http.Request) {
-	orderIDStr := r.URL.Query().Get("order_id")
-	orderID, err := strconv.Atoi(orderIDStr)
-	if err != nil {
-		http.Error(w, "无效的订单ID", http.StatusBadRequest)
-		return
-	}
-
-	cacheKey := fmt.Sprintf("order_status_%d", orderID)
-	data, err := GetFromCache(rp, cacheKey)
-	if err == nil {
-		w.Write([]byte(data))
-		return
-	}
-
-	// 缓存未命中，从数据库查询订单状态
-	status, err := QueryOrderStatus(db, orderID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("查询订单状态失败: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	jsonData, _ := json.Marshal(map[string]string{"status": status})
 	SetToCache(rp, cacheKey, string(jsonData), time.Hour)
 	w.Write(jsonData)
 }
@@ -510,7 +519,7 @@ func handleLoginShop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var shop Shop
-	err := db.QueryRow("SELECT ShopID, ShopName, Address, Phone, ShopPassword FROM Shop WHERE ShopName = ?", credentials.ShopName).Scan(
+	err := db.QueryRow("SELECT shop_id, shop_name, address, phone, shop_password FROM shops WHERE shop_name = ?", credentials.ShopName).Scan(
 		&shop.ShopID, &shop.ShopName, &shop.Address, &shop.Phone, &shop.ShopPassword,
 	)
 	if err == sql.ErrNoRows {
@@ -534,16 +543,26 @@ func handleLoginShop(w http.ResponseWriter, r *http.Request) {
 
 // HTTP 服务启动
 func main() {
-	http.HandleFunc("/order", handleOrder)              // 订外卖
-	http.HandleFunc("/shops", handleNearbyShops)        // 获取附近商家
-	http.HandleFunc("/products", handleShopProducts)    // 查询商家商品
-	http.HandleFunc("/order/status", handleOrderStatus) // 查询订单状态
-	http.HandleFunc("/user/register", handleRegister)   // 用户注册
-	http.HandleFunc("/user/login", handleLogin)         // 用户登录
+	// 注册HTTP处理函数
+	http.HandleFunc("/user/register", handleRegister)             // 用户注册
+	http.HandleFunc("/user/login", handleLogin)                   // 用户登录
+	http.HandleFunc("/order", handleOrder)                        // 订外卖
+	http.HandleFunc("/shop/register", handleRegisterShop)         // 商家注册
+	http.HandleFunc("/shop/login", handleLoginShop)               // 商家登录
+	http.HandleFunc("/shop/add_product", HandleAddProductForShop) // 商家添加商品
+	http.HandleFunc("/shops", handleNearbyShops)                  // 获取附近商家
+	http.HandleFunc("/products", handleShopProducts)              // 查询商家商品
+	http.HandleFunc("/order/status", handleOrderStatus)           // 查询订单状态
+	http.HandleFunc("/rider/apply", handleApplyForRider)          // 骑手身份申请
+	http.HandleFunc("/rider/grab", HandleRiderGrabOrder(db, rp))  // 骑手抢单
+	http.HandleFunc("/im/send", HandleSendMessage(db, rp))        // 发送群组消息
+	http.HandleFunc("/im/messages", HandleGetMessages(db, rp))    // 获取群组消息
 
-	// 即时消息路由
-	http.HandleFunc("/im/send", HandleSendMessage(db, rp))     // 发送群组消息
-	http.HandleFunc("/im/messages", HandleGetMessages(db, rp)) // 获取群组消息
+	// 启动商家处理订单的服务
+	go ShopProcessOrder(rp, db)
+
+	// 启动每周清理调度器
+	go StartWeeklyCleanUpScheduler(db)
 
 	log.Println("服务器启动，端口 :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
