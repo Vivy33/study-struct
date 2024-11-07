@@ -123,18 +123,21 @@ func handleNearbyShops(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonData)
 }
 
-// 用户下单，将订单信息发布到订单频道
-func UserPlaceOrder(orderID, userID, shopID, riderID int, rp *RedisPool) error {
+// 用户下单，将订单信息发布到订单频道，包含商品信息
+func UserPlaceOrder(orderID, userID, shopID, riderID int, products []Product, rp *RedisPool) error {
 	rdb := rp.GetClient()
 	defer rp.PutClient(rdb)
 
-	// 构建订单信息并将其转化为 JSON 格式
+	// 构建订单信息
 	order := map[string]interface{}{
 		"order_id": orderID,
 		"user_id":  userID,
 		"shop_id":  shopID,
 		"rider_id": riderID,
+		"products": products, // 将商品信息添加到订单
 	}
+
+	// 将订单信息转化为 JSON 格式
 	orderJSON, err := json.Marshal(order)
 	if err != nil {
 		return fmt.Errorf("订单序列化失败: %v", err)
@@ -145,6 +148,7 @@ func UserPlaceOrder(orderID, userID, shopID, riderID int, rp *RedisPool) error {
 	if err != nil {
 		return fmt.Errorf("订单发布失败: %v", err)
 	}
+
 	fmt.Println("订单已成功发布到订单频道")
 	return nil
 }
