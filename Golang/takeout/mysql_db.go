@@ -57,19 +57,32 @@ func InsertOrder(db *sql.DB, order *Order) (int64, error) {
 
 // 更新订单状态，使用事务
 func UpdateOrderStatus(db *sql.DB, orderID int, status string) error {
+	// 开始一个事务
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("无法开始事务: %v", err)
 	}
 
+	// 确保在函数结束时正确提交或回滚事务
+	defer func() {
+		if err != nil {
+			// 如果出现错误，回滚事务
+			tx.Rollback()
+		} else {
+			// 如果没有错误，提交事务
+			err = tx.Commit()
+		}
+	}()
+
+	// 执行更新订单状态的 SQL 查询
 	query := "UPDATE orders SET status = ? WHERE order_id = ?"
 	_, err = tx.Exec(query, status, orderID)
 	if err != nil {
-		tx.Rollback()
 		return fmt.Errorf("订单状态更新失败: %v", err)
 	}
 
-	return tx.Commit()
+	// 事务提交会在 defer 语句中执行
+	return nil
 }
 
 // 删除订单，使用事务
@@ -122,12 +135,47 @@ func QueryProductsByShopID(db *sql.DB, shopID int) ([]Product, error) {
 	return products, nil
 }
 
-// 查询附近的商家
-func QueryShops(db *sql.DB, limit int) ([]Shop, error) {
-	query := "SELECT shop_id, name, phone, address, description FROM shops LIMIT ?"
-	rows, err := db.Query(query, limit)
+// 查询商家，支持分页
+func QueryShops(db *sql.DB, offset, limit int) ([]Shop, error) {
+	// 使用 LIMIT 和 OFFSET 进行分页查询
+	query := "SELECT shop_id, name, phone, address, description FROM shops LIMIT ? OFFSET ?"
+
+	// 执行 SQL 查询，传入 LIMIT 和 OFFSET 参数
+	rows, err := db.Query(query, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("查询商家失败: %v", err)
+	}
+	defer rows.Close()
+
+	// 存储查询结果
+	var shops []Shop
+	for rows.Next() {
+		var shop Shop
+		if err := rows.Scan(&shop.ShopID, &shop.ShopName, &shop.Phone, &shop.Address, &shop.Description); err != nil {
+			return nil, err
+		}
+		shops = append(shops, shop)
+	}
+
+	return shops, nil
+}
+
+// 查询附近商家，基于经纬度排序
+func QueryNearbyShops(db *sql.DB, lat, lon float64, limit int) ([]Shop, error) {
+	query := `
+        SELECT shop_id, name, phone, address, description, latitude, longitude,
+               ( 6371 * acos( cos( radians(?) ) * cos( radians(latitude) ) *
+               cos( radians(longitude) - radians(?) ) + sin( radians(?) ) *
+               sin( radians(latitude) ) ) ) AS distance
+        FROM shops
+        HAVING distance < 50  -- 例如，限制查询 50 公里以内的商家
+        ORDER BY distance
+        LIMIT ?
+    `
+
+	rows, err := db.Query(query, lat, lon, lat, limit)
+	if err != nil {
+		return nil, fmt.Errorf("查询附近商家失败: %v", err)
 	}
 	defer rows.Close()
 
