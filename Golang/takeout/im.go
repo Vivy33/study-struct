@@ -20,7 +20,7 @@ IM系统拿到OrderlD后读MQ(Order结构体下有UserlD，ShoplD，RiderlD)同�
 */
 
 // CreateGroup 创建与订单关联的新聊天群组
-func CreateGroup(order map[string]interface{}, rp *RedisPool, db *sql.DB) error {
+func CreateGroup(order map[string]interface{}, rp *RedisPool, db *sql.DB, tx *sql.Tx) error {
 	group := &Group{
 		OrderID: int(order["order_id"].(float64)), // JSON 反序列化时数字会被转换为 float64
 		UserID:  int(order["user_id"].(float64)),
@@ -28,7 +28,7 @@ func CreateGroup(order map[string]interface{}, rp *RedisPool, db *sql.DB) error 
 		RiderID: int(order["rider_id"].(float64)),
 	}
 
-	groupID, err := insertGroup(rp, db, group)
+	groupID, err := insertGroup(tx, rp, group) // 使用传入的事务对象
 	if err != nil {
 		return fmt.Errorf("创建群组失败: %v", err)
 	}
@@ -77,7 +77,7 @@ func SaveMessage(db *sql.DB, msg *Message) error {
 // 先将消息保存到数据库，然后再发布到 Redis
 // 如果数据库保存失败，可以立即返回错误，而不必处理已发送的 Redis 消息可能带来的不一致问题
 // 避免了在发布消息到 Redis 后数据库写入失败的情况
-func HandleSendMessage(db *sql.DB, rp *RedisPool) http.HandlerFunc {
+func handleSendMessage(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var msg Message
 		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
@@ -111,7 +111,7 @@ func HandleSendMessage(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 }
 
 // HandleGetMessages 处理获取特定群组消息的 HTTP 请求
-func HandleGetMessages(db *sql.DB, rp *RedisPool) http.HandlerFunc {
+func handleGetMessages(db *sql.DB, rp *RedisPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		groupID := r.URL.Query().Get("group_id")
 		if groupID == "" {
