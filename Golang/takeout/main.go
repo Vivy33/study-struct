@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 
+	"github.com/dgrijalva/jwt-go"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -248,10 +249,11 @@ func insertOrder(rp *RedisPool, db *sql.DB, order *Order) (int64, error) {
 	return orderID, nil
 }
 
-func insertGroup(rp *RedisPool, db *sql.DB, group *Group) (int64, error) {
-	// Insert group into MySQL
-	query := "INSERT INTO `groups` (order_id, user_id, shop_id, rider_id) VALUES (?, ?, ?, ?)" // 确保表名正确
-	result, err := db.Exec(query, group.OrderID, group.UserID, group.ShopID, group.RiderID)
+// insertGroup 插入群组信息到数据库和Redis，使用传入的事务对象
+func insertGroup(tx *sql.Tx, rp *RedisPool, group *Group) (int64, error) {
+	// Insert group into MySQL using the provided transaction
+	query := "INSERT INTO `groups` (order_id, user_id, shop_id, rider_id) VALUES (?, ?, ?, ?)"
+	result, err := tx.Exec(query, group.OrderID, group.UserID, group.ShopID, group.RiderID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert group into MySQL: %v", err)
 	}
@@ -298,18 +300,256 @@ func ValidateUser(db *sql.DB, username, password string) (*User, error) {
 	return &user, nil
 }
 
-func ValidateShop(shop *Shop) error {
-	if shop.ShopName == "" {
-		return fmt.Errorf("商家名称不能为空")
+// 生成JWT Token，并存储Token到Redis
+func generateTokenAndStoreInRedis(rp *RedisPool, userID int) (string, error) {
+	claims := jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(time.Hour * 24 * 365).Unix(), // 设置Token有效期为一年
 	}
-	if shop.Address == "" {
-		return fmt.Errorf("商家地址不能为空")
-	}
-	if shop.Phone == "" {
-		return fmt.Errorf("商家电话不能为空")
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte("your_secret_key"))
+	if err != nil {
+		return "", err
 	}
 
-	return nil
+	// 存储Token到Redis，并设置过期时间
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+	err = rdb.Set(context.Background(), fmt.Sprintf("token:%d", userID), tokenString, 365*24*time.Hour).Err()
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
+}
+
+// 用户登录
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var loginRequest struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&loginRequest); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	// 使用 ValidateUser 函数检查用户凭据
+	validatedUser, err := ValidateUser(db, loginRequest.Username, loginRequest.Password)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("登录失败: %v", err), http.StatusUnauthorized)
+		return
+	}
+
+	token, err := generateTokenAndStoreInRedis(rp, validatedUser.UserID)
+	if err != nil {
+		http.Error(w, "生成Token失败", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "登录成功",
+		"username": validatedUser.Username,
+		"user_id":  validatedUser.UserID,
+		"token":    token,
+	})
+}
+
+// 验证 Token 的中间件
+func authenticateToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		if token == "" {
+			http.Error(w, "缺少Token", http.StatusUnauthorized)
+			return
+		}
+
+		// 去掉 "Bearer " 前缀
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		rdb := rp.GetClient()
+		defer rp.PutClient(rdb)
+
+		// 用 token:userID 作为 Redis key
+		cachedToken, err := rdb.Get(context.Background(), fmt.Sprintf("token:%s", token)).Result()
+		if err != nil || cachedToken != token {
+			http.Error(w, "Token无效或已过期", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
+// 一个需要验证 Token 的受保护路由
+func protectedEndpoint(w http.ResponseWriter, r *http.Request) {
+	// 只有 Token 验证通过的请求才能访问这个资源
+	fmt.Fprintf(w, "你已成功访问受保护的资源")
+}
+
+// ValidateShop 验证商家凭据
+func ValidateShop(db *sql.DB, shopName, password string) (*Shop, error) {
+	var shop Shop
+	err := db.QueryRow("SELECT shop_id, shop_name, shop_password FROM shops WHERE shop_name = ?", shopName).Scan(&shop.ShopID, &shop.ShopName, &shop.ShopPassword)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("商家不存在")
+		}
+		return nil, fmt.Errorf("查询商家信息失败: %v", err)
+	}
+
+	// 比较哈希后的密码和输入的密码
+	if err := bcrypt.CompareHashAndPassword([]byte(shop.ShopPassword), []byte(password)); err != nil {
+		return nil, fmt.Errorf("密码错误")
+	}
+
+	return &shop, nil
+}
+
+// 生成JWT Token，并存储到Redis
+func generateTokenShop(rp *RedisPool, shopID int) (string, error) {
+	// 创建JWT的Claims
+	claims := jwt.MapClaims{
+		"shop_id": shopID,
+		"exp":     time.Now().Add(time.Hour * 24).Unix(), // 设置Token有效期为24小时
+	}
+
+	// 使用HS256签名算法创建JWT Token
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// 使用全局密钥签名Token
+	tokenString, err := token.SignedString([]byte("your_secret_key"))
+	if err != nil {
+		return "", err
+	}
+
+	// 将生成的Token存储到Redis中，设置过期时间为24小时
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+
+	err = rdb.Set(context.Background(), fmt.Sprintf("token:shop:%d", shopID), tokenString, 24*time.Hour).Err()
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
+}
+
+// 商家登录
+func handleLoginShop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var credentials struct {
+		ShopName string `json:"shop_name"`
+		Password string `json:"password"`
+	}
+
+	// 解析请求体
+	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+		http.Error(w, "请求体解析错误", http.StatusBadRequest)
+		return
+	}
+
+	// 使用 ValidateShop 函数检查商家凭据
+	validatedShop, err := ValidateShop(db, credentials.ShopName, credentials.Password)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("登录失败: %v", err), http.StatusUnauthorized)
+		return
+	}
+
+	// 生成Token，并存储到Redis
+	token, err := generateTokenShop(rp, validatedShop.ShopID)
+	if err != nil {
+		http.Error(w, "生成Token失败", http.StatusInternalServerError)
+		return
+	}
+
+	// 返回登录成功信息和Token
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "登录成功",
+		"shop_name": validatedShop.ShopName,
+		"shop_id":   validatedShop.ShopID,
+		"token":     token,
+	})
+}
+
+// 验证Token的中间件，适用于商家
+func authenticateTokenShop(rp *RedisPool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 从请求头获取Authorization字段中的Token
+		token := r.Header.Get("Authorization")
+		if token == "" {
+			http.Error(w, "缺少Token", http.StatusUnauthorized)
+			return
+		}
+
+		// 去掉 "Bearer " 前缀
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		// 从Redis中获取Token
+		rdb := rp.GetClient()
+		defer rp.PutClient(rdb)
+
+		cachedToken, err := rdb.Get(context.Background(), fmt.Sprintf("token:shop:%s", token)).Result()
+		if err != nil || cachedToken != token {
+			http.Error(w, "Token无效或已过期", http.StatusUnauthorized)
+			return
+		}
+
+		// 解析并验证Token
+		claims, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+			// 验证Token签名
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte("your_secret_key"), nil
+		})
+
+		if err != nil || !claims.Valid {
+			http.Error(w, "Token无效或已过期", http.StatusUnauthorized)
+			return
+		}
+
+		// Token验证成功，继续执行下一个Handler
+		next.ServeHTTP(w, r)
+	}
+}
+
+// 生成JWT Token，适用于骑手，并存储到Redis
+func generateTokenRider(rp *RedisPool, riderID int) (string, error) {
+	// 创建JWT的Claims
+	claims := jwt.MapClaims{
+		"rider_id": riderID,
+		"exp":      time.Now().Add(time.Hour * 24).Unix(), // 设置Token有效期为24小时
+	}
+
+	// 使用HS256签名算法创建JWT Token
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// 使用全局密钥签名Token
+	tokenString, err := token.SignedString([]byte("your_secret_key"))
+	if err != nil {
+		return "", err
+	}
+
+	// 将生成的Token存储到Redis中，设置过期时间为24小时
+	rdb := rp.GetClient()
+	defer rp.PutClient(rdb)
+
+	err = rdb.Set(context.Background(), fmt.Sprintf("token:rider:%d", riderID), tokenString, 24*time.Hour).Err()
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
 }
 
 // 骑手身份申请
@@ -326,6 +566,7 @@ func handleApplyForRider(w http.ResponseWriter, r *http.Request) {
 		Rating      float64 `json:"rating"`
 	}
 
+	// 解析请求体
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "请求体解析错误", http.StatusBadRequest)
 		return
@@ -354,212 +595,93 @@ func handleApplyForRider(w http.ResponseWriter, r *http.Request) {
 	}
 	rider.RiderID = int(riderID)
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(rider)
-}
-
-// AddProductForShop 添加商品到指定店铺
-func AddProductForShop(rp *RedisPool, db *sql.DB, shopID int, product *Product) (int64, error) {
-	// 插入商品到数据库
-	query := "INSERT INTO products (shop_id, product_name, description, price, stock) VALUES (?, ?, ?, ?, ?)"
-	result, err := db.Exec(query, product.ShopID, product.ProductName, product.Description, product.Price, product.Stock)
+	// 为骑手生成Token，并存储到Redis
+	token, err := generateTokenRider(rp, rider.RiderID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to insert product into MySQL: %v", err)
-	}
-	productID, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get product ID from MySQL: %v", err)
-	}
-
-	// 插入商品到 Redis
-	rdb := rp.GetClient()
-	defer rp.PutClient(rdb)
-	err = rdb.HMSet(ctx, fmt.Sprintf("product:%d", productID), map[string]interface{}{
-		"product_id":   productID,
-		"shop_id":      product.ShopID,
-		"product_name": product.ProductName,
-		"description":  product.Description,
-		"price":        product.Price,
-		"stock":        product.Stock,
-	}).Err()
-	if err != nil {
-		return 0, fmt.Errorf("failed to insert product into Redis: %v", err)
-	}
-
-	return productID, nil
-}
-
-// HandleAddProductForShop HTTP处理函数
-func HandleAddProductForShop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Only supports POST method", http.StatusMethodNotAllowed)
+		http.Error(w, "生成Token失败", http.StatusInternalServerError)
 		return
 	}
 
-	var product Product
-	if err := json.NewDecoder(r.Body).Decode(&product); err != nil {
-		http.Error(w, "Request body parse error", http.StatusBadRequest)
-		return
-	}
-
-	// 确保 shopID 是有效的
-	if product.ShopID == 0 {
-		http.Error(w, "Invalid shop ID", http.StatusBadRequest)
-		return
-	}
-
-	productID, err := AddProductForShop(rp, db, product.ShopID, &product)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to add product: %v", err), http.StatusInternalServerError)
-		return
-	}
-
+	// 返回创建成功信息和Token
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":     "Product added successfully",
-		"product_id": productID,
+		"status":   "骑手注册成功",
+		"rider_id": rider.RiderID,
+		"token":    token,
 	})
 }
 
-// 查询商家商品
-func handleShopProducts(w http.ResponseWriter, r *http.Request) {
-	shopIDStr := r.URL.Query().Get("shop_id")
-	shopID, err := strconv.Atoi(shopIDStr)
-	if err != nil {
-		http.Error(w, "无效的商家ID", http.StatusBadRequest)
-		return
+// 验证Token的中间件，适用于骑手
+func authenticateTokenRider(rp *RedisPool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 从请求头获取Authorization字段中的Token
+		token := r.Header.Get("Authorization")
+		if token == "" {
+			http.Error(w, "缺少Token", http.StatusUnauthorized)
+			return
+		}
+
+		// 去掉 "Bearer " 前缀
+		token = strings.TrimPrefix(token, "Bearer ")
+
+		// 从Redis中获取Token
+		rdb := rp.GetClient()
+		defer rp.PutClient(rdb)
+
+		cachedToken, err := rdb.Get(context.Background(), fmt.Sprintf("token:rider:%s", token)).Result()
+		if err != nil || cachedToken != token {
+			http.Error(w, "Token无效或已过期", http.StatusUnauthorized)
+			return
+		}
+
+		// 解析并验证Token
+		claims, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+			// 验证Token签名
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte("your_secret_key"), nil
+		})
+
+		if err != nil || !claims.Valid {
+			http.Error(w, "Token无效或已过期", http.StatusUnauthorized)
+			return
+		}
+
+		// Token验证成功，继续执行下一个Handler
+		next.ServeHTTP(w, r)
 	}
-
-	cacheKey := fmt.Sprintf("shop_products_%d", shopID)
-	data, err := GetFromCache(rp, cacheKey)
-	if err == nil {
-		w.Write([]byte(data))
-		return
-	}
-
-	// 缓存未命中，从数据库查询
-	products, err := QueryProductsByShopID(db, shopID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("查询商品失败: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// 写入 Redis 缓存
-	jsonData, _ := json.Marshal(products)
-	SetToCache(rp, cacheKey, string(jsonData), time.Hour)
-	w.Write(jsonData)
-}
-
-// 获取附近的商家
-func handleNearbyShops(w http.ResponseWriter, r *http.Request) {
-	cacheKey := "nearby_shops"
-	data, err := GetFromCache(rp, cacheKey)
-	if err == nil {
-		w.Write([]byte(data))
-		return
-	}
-
-	// 随机返回 N 个商家
-	shops, err := QueryShops(db, 5)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("查询商家失败: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	jsonData, _ := json.Marshal(shops)
-	SetToCache(rp, cacheKey, string(jsonData), time.Hour)
-	w.Write(jsonData)
-}
-
-// 用户登录
-func handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var loginRequest struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&loginRequest); err != nil {
-		http.Error(w, "请求体解析错误", http.StatusBadRequest)
-		return
-	}
-
-	// 使用 ValidateUser 函数检查用户凭据
-	validatedUser, err := ValidateUser(db, loginRequest.Username, loginRequest.Password)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("登录失败: %v", err), http.StatusUnauthorized)
-		return
-	}
-
-	// 返回登录成功信息
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":   "登录成功",
-		"username": validatedUser.Username,
-		"user_id":  validatedUser.UserID,
-	})
-}
-
-func handleLoginShop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "只支持 POST 请求", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var credentials struct {
-		ShopName string `json:"shop_name"`
-		Password string `json:"password"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
-		http.Error(w, "请求体解析错误", http.StatusBadRequest)
-		return
-	}
-
-	var shop Shop
-	err := db.QueryRow("SELECT shop_id, shop_name, address, phone, shop_password FROM shops WHERE shop_name = ?", credentials.ShopName).Scan(
-		&shop.ShopID, &shop.ShopName, &shop.Address, &shop.Phone, &shop.ShopPassword,
-	)
-	if err == sql.ErrNoRows {
-		http.Error(w, "商家名称或密码错误", http.StatusUnauthorized)
-		return
-	} else if err != nil {
-		http.Error(w, "查询商家信息失败", http.StatusInternalServerError)
-		return
-	}
-
-	// 验证密码
-	if err := bcrypt.CompareHashAndPassword([]byte(shop.ShopPassword), []byte(credentials.Password)); err != nil {
-		http.Error(w, "商家名称或密码错误", http.StatusUnauthorized)
-		return
-	}
-
-	// 登录成功
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(shop)
 }
 
 // HTTP 服务启动
 func main() {
-	// 注册HTTP处理函数
-	http.HandleFunc("/user/register", handleRegister)             // 用户注册
-	http.HandleFunc("/user/login", handleLogin)                   // 用户登录
-	http.HandleFunc("/order", handleOrder)                        // 订外卖
-	http.HandleFunc("/shop/register", handleRegisterShop)         // 商家注册
-	http.HandleFunc("/shop/login", handleLoginShop)               // 商家登录
-	http.HandleFunc("/shop/add_product", HandleAddProductForShop) // 商家添加商品
-	http.HandleFunc("/shops", handleNearbyShops)                  // 获取附近商家
-	http.HandleFunc("/products", handleShopProducts)              // 查询商家商品
-	http.HandleFunc("/order/status", handleOrderStatus)           // 查询订单状态
-	http.HandleFunc("/rider/apply", handleApplyForRider)          // 骑手身份申请
-	http.HandleFunc("/rider/grab", HandleRiderGrabOrder(db, rp))  // 骑手抢单
-	http.HandleFunc("/im/send", HandleSendMessage(db, rp))        // 发送群组消息
-	http.HandleFunc("/im/messages", HandleGetMessages(db, rp))    // 获取群组消息
+	http.HandleFunc("/protected", authenticateToken(protectedEndpoint))                // 验证用户
+	http.HandleFunc("/protected/shop", authenticateTokenShop(rp, protectedEndpoint))   // 验证商家
+	http.HandleFunc("/protected/rider", authenticateTokenRider(rp, protectedEndpoint)) // 验证骑手
 
-	// 启动商家处理订单的服务
-	go ShopProcessOrder(rp, db)
+	http.HandleFunc("/user/register", handleRegister) // 用户注册
+	http.HandleFunc("/user/login", handleLogin)       // 用户登录
+
+	http.HandleFunc("/shops", handleGetShops)           // 获取商家列表
+	http.HandleFunc("/shops", handleNearbyShops)        // 获取附近商家
+	http.HandleFunc("/products", handleShopProducts)    // 查询商家商品
+	http.HandleFunc("/order", handleOrder)              // 订外卖
+	http.HandleFunc("/order/status", handleOrderStatus) // 查询订单状态
+
+	http.HandleFunc("/shop/register", handleRegisterShop)              // 商家注册
+	http.HandleFunc("/shop/login", handleLoginShop)                    // 商家登录
+	http.HandleFunc("/shop/add_product", handleAddProductForShop)      // 商家添加商品
+	http.HandleFunc("/shop/accept_order", handleAcceptOrder)           // 商家确认订单
+	http.HandleFunc("/shop/publish_order", handlePublishDeliveryOrder) // 商家发布订单
+
+	http.HandleFunc("/notify", handNotifyNearbyRider) // 系统随机通知骑手
+
+	http.HandleFunc("/rider/apply", handleApplyForRider)         // 骑手身份申请
+	http.HandleFunc("/rider/grab", handleRiderGrabOrder(db, rp)) // 骑手抢单
+	http.HandleFunc("/rider/complete", handleCompleteOrder)      // 骑手完成订单
+
+	http.HandleFunc("/im/send", handleSendMessage(db, rp))     // 发送群组消息
+	http.HandleFunc("/im/messages", handleGetMessages(db, rp)) // 获取群组消息
 
 	// 启动每周清理调度器
 	go StartWeeklyCleanUpScheduler(db)
