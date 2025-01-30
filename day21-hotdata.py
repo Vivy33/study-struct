@@ -1,3 +1,5 @@
+# 一个整数数组 nums 和一个整数 k，用一个字符串返回其中出现频率前 k 高的元素
+
 from collections import Counter
 from typing import List
 
